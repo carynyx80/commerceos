@@ -8,7 +8,7 @@ export function Footer() {
         <div>
           <div className="flex items-center gap-2.5"><Mark /> <span className="font-medium">Commerce <span className="text-champagne">OS</span></span></div>
           <p className="display mt-6 max-w-xs text-[30px] text-porcelain/90">Commerce, without boundaries.</p>
-          <p className="mt-3 max-w-xs text-[13px] text-mist">The operating system for autonomous commerce. Settled on Robinhood Chain in USDG and ETH.</p>
+          <p className="mt-3 max-w-xs text-[13px] text-mist">The operating system for autonomous commerce. Settled on Robinhood Chain (USDG, ETH) and BNB Chain (USDC, BNB).</p>
         </div>
         <FooterCol title="Marketplace" links={[["Explore", "/explore"], ["AI Commerce", "/workspace"], ["Saved", "/saved"], ["Orders", "/orders"]]} />
         <FooterCol title="Build" links={[["Sell on Commerce OS", "/sell"], ["Agent Studio", "/agents"], ["Developers", "/developers"], ["How it works", "/#how"]]} />
@@ -16,7 +16,7 @@ export function Footer() {
       </div>
       <div className="mx-auto flex max-w-[1440px] flex-col gap-2 border-t hairline px-4 py-6 text-[12px] text-dim sm:flex-row sm:justify-between sm:px-6 lg:px-10">
         <span>© {new Date().getFullYear()} Commerce OS. Escrow contracts are pending independent audit.</span>
-        <span className="num">Robinhood Chain · USDG · ETH</span>
+        <span className="num">Robinhood Chain · BNB Chain · USDG · ETH · USDC · BNB</span>
       </div>
     </footer>
   );

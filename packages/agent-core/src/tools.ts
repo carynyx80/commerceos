@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { prisma, enqueueJob, type Agent, type AgentPolicy } from "@commerce-os/database";
-import { acceptOffer, checkSpendingPolicy, createCheckoutQuote, getNegotiation, openNegotiation, rejectNegotiation, submitOffer, CommerceError } from "@commerce-os/commerce";
+import { acceptOffer, chainIdForAsset, checkSpendingPolicy, createCheckoutQuote, getNegotiation, openNegotiation, rejectNegotiation, submitOffer, CommerceError } from "@commerce-os/commerce";
 import { formatUsd } from "@commerce-os/shared";
 
 /**
@@ -55,7 +55,7 @@ export const toolDefs = {
       category: z.string().max(40).optional(),
       maxPriceUsd: usd.optional(),
       minPriceUsd: z.number().min(0).max(1_000_000).optional().describe("US dollars"),
-      asset: z.enum(["USDG", "ETH"]).optional(),
+      asset: z.enum(["USDG", "ETH", "USDC", "BNB"]).optional().describe("USDG/ETH settle on Robinhood Chain; USDC/BNB on BNB Chain"),
       negotiableOnly: z.boolean().optional(),
     }),
   },
@@ -77,12 +77,12 @@ export const toolDefs = {
   check_spending_policy: {
     label: "Validating spending policy",
     description: "Check whether a purchase fits the agent's spending policy. Deterministic; the model cannot override it.",
-    schema: z.object({ totalUsd: usd, storeId: z.string(), asset: z.enum(["USDG", "ETH"]) }),
+    schema: z.object({ totalUsd: usd, storeId: z.string(), asset: z.enum(["USDG", "ETH", "USDC", "BNB"]) }),
   },
   start_negotiation: {
     label: "Opening negotiation",
     description: "Open a negotiation on a negotiable listing.",
-    schema: z.object({ productId: z.string(), quantity: z.number().int().min(1).max(10).default(1), asset: z.enum(["USDG", "ETH"]).default("USDG") }),
+    schema: z.object({ productId: z.string(), quantity: z.number().int().min(1).max(10).default(1), asset: z.enum(["USDG", "ETH", "USDC", "BNB"]).default("USDG") }),
   },
   make_offer: {
     label: "Preparing offer",
@@ -108,7 +108,7 @@ export const toolDefs = {
     label: "Preparing payment",
     description:
       "Create a server-signed checkout quote. If the agent has autonomous payments enabled and the purchase passes policy, the quote is payable by the agent's smart account; otherwise the user pays from their wallet.",
-    schema: z.object({ productId: z.string(), quantity: z.number().int().min(1).max(10).default(1), asset: z.enum(["USDG", "ETH"]), negotiationId: z.string().optional() }),
+    schema: z.object({ productId: z.string(), quantity: z.number().int().min(1).max(10).default(1), asset: z.enum(["USDG", "ETH", "USDC", "BNB"]), negotiationId: z.string().optional() }),
   },
   execute_purchase: {
     label: "Awaiting blockchain confirmation",
@@ -313,7 +313,9 @@ const impl: Record<ToolName, (args: any, ctx: ToolContext) => Promise<unknown>> 
     }
     const total = unit * a.quantity;
     const agent = ctx.agent;
-    const autonomous = Boolean(agent?.policy?.automationEnabled && agent.accountAddress && process.env.AUTONOMOUS_PAYMENTS_ENABLED === "true");
+    // Autonomous only for assets on the chain where the agent's smart account lives.
+    const sameChain = agent?.accountChainId != null && chainIdForAsset(a.asset) === agent.accountChainId;
+    const autonomous = Boolean(agent?.policy?.automationEnabled && agent.accountAddress && sameChain && process.env.AUTONOMOUS_PAYMENTS_ENABLED === "true");
     const policyRaw = agent ? await checkSpendingPolicy(agent, { totalCents: total, storeId: product.storeId, asset: a.asset, category: product.category }) : null;
     const policy = policyRaw ? policyView(policyRaw) : null;
 
@@ -325,7 +327,13 @@ const impl: Record<ToolName, (args: any, ctx: ToolContext) => Promise<unknown>> 
         total: money(total),
         checkoutLink: link,
         policy,
-        reason: !agent ? "No agent policy." : !autonomous ? "Autonomous payments are not enabled for this agent." : policyRaw?.reasons.join(" "),
+        reason: !agent
+          ? "No agent policy."
+          : agent.accountAddress && !sameChain
+            ? `The agent's smart account is on another network; ${a.asset} needs the user's approval.`
+            : !autonomous
+              ? "Autonomous payments are not enabled for this agent."
+              : policyRaw?.reasons.join(" "),
       };
     }
     const wallet = await prisma.wallet.findFirst({ where: { userId: ctx.userId } });

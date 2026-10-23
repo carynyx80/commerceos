@@ -2,7 +2,7 @@ import { Body, Controller, Get, HttpCode, Param, Post, Query } from "@nestjs/com
 import { formatUnits, type Hex } from "viem";
 import { z } from "zod";
 import { commerceEscrowAbi, explorerAddress, explorerTx } from "@commerce-os/blockchain";
-import { deployment, publicClient } from "@commerce-os/commerce";
+import { deployment, enabledChains, publicClient } from "@commerce-os/commerce";
 import { FLAGS, audit, enqueueJob, notify } from "@commerce-os/database";
 import { prisma } from "../../common/prisma";
 import { Auth, CurrentUser, type AuthContext } from "../../common/auth";
@@ -30,36 +30,40 @@ export class AdminController {
       prisma.job.count({ where: { status: "FAILED" } }),
       prisma.systemFlag.findMany(),
     ]);
-    let chain: unknown = null;
-    try {
-      const d = deployment();
-      const c = publicClient();
-      const [paused, liabUsdg, liabEth, owner, signer] = await Promise.all([
-        c.readContract({ address: d.escrow, abi: commerceEscrowAbi, functionName: "paused" }),
-        c.readContract({ address: d.escrow, abi: commerceEscrowAbi, functionName: "liabilities", args: [d.usdg] }),
-        c.readContract({ address: d.escrow, abi: commerceEscrowAbi, functionName: "liabilities", args: ["0x0000000000000000000000000000000000000000"] }),
-        c.readContract({ address: d.escrow, abi: commerceEscrowAbi, functionName: "owner" }),
-        c.readContract({ address: d.escrow, abi: commerceEscrowAbi, functionName: "quoteSigner" }),
-      ]);
-      const treasuryEth = await c.getBalance({ address: d.treasury });
-      const treasuryUsdg = await c.readContract({ address: d.usdg, abi: [{ type: "function", name: "balanceOf", stateMutability: "view", inputs: [{ type: "address" }], outputs: [{ type: "uint256" }] }] as const, functionName: "balanceOf", args: [d.treasury] });
-      chain = {
-        chainId: config.chainId,
-        escrow: d.escrow,
-        escrowExplorer: explorerAddress(config.chainId, d.escrow),
-        paused,
-        owner,
-        quoteSigner: signer,
-        escrowedUsdg: formatUnits(liabUsdg, 6),
-        escrowedEth: formatUnits(liabEth, 18),
-        treasury: d.treasury,
-        treasuryUsdg: formatUnits(treasuryUsdg, 6),
-        treasuryEth: formatUnits(treasuryEth, 18),
-        testToken: d.testToken,
-      };
-    } catch (e) {
-      chain = { error: (e as Error).message };
-    }
+    const chains = await Promise.all(enabledChains().map(async (chainId) => {
+      try {
+        const d = deployment(chainId);
+        const c = publicClient(chainId);
+        const erc20 = [{ type: "function", name: "balanceOf", stateMutability: "view", inputs: [{ type: "address" }], outputs: [{ type: "uint256" }] }] as const;
+        const [paused, liabStable, liabNative, owner, signer, treasuryNative, treasuryStable] = await Promise.all([
+          c.readContract({ address: d.escrow, abi: commerceEscrowAbi, functionName: "paused" }),
+          c.readContract({ address: d.escrow, abi: commerceEscrowAbi, functionName: "liabilities", args: [d.stable] }),
+          c.readContract({ address: d.escrow, abi: commerceEscrowAbi, functionName: "liabilities", args: ["0x0000000000000000000000000000000000000000"] }),
+          c.readContract({ address: d.escrow, abi: commerceEscrowAbi, functionName: "owner" }),
+          c.readContract({ address: d.escrow, abi: commerceEscrowAbi, functionName: "quoteSigner" }),
+          c.getBalance({ address: d.treasury }),
+          c.readContract({ address: d.stable, abi: erc20, functionName: "balanceOf", args: [d.treasury] }),
+        ]);
+        return {
+          chainId,
+          escrow: d.escrow,
+          escrowExplorer: explorerAddress(chainId, d.escrow),
+          paused,
+          owner,
+          quoteSigner: signer,
+          stableSymbol: d.stableSymbol,
+          nativeSymbol: d.nativeSymbol,
+          escrowedStable: formatUnits(liabStable, d.stableDecimals),
+          escrowedNative: formatUnits(liabNative, 18),
+          treasury: d.treasury,
+          treasuryStable: formatUnits(treasuryStable, d.stableDecimals),
+          treasuryNative: formatUnits(treasuryNative, 18),
+          testToken: d.testToken,
+        };
+      } catch (e) {
+        return { chainId, error: (e as Error).message };
+      }
+    }));
     const released = orders.find((o) => o.state === "RELEASED");
     return {
       users,
@@ -72,7 +76,7 @@ export class AdminController {
       agentsByStatus: Object.fromEntries(agents.map((a) => [a.status, a._count])),
       failedJobs,
       flags: Object.fromEntries(flags.map((f) => [f.key, { value: f.value, reason: f.reason, updatedAt: f.updatedAt }])),
-      chain,
+      chains,
     };
   }
 
@@ -154,7 +158,7 @@ export class AdminController {
   @Get("orders")
   async orders(@Query("state") state?: string) {
     const items = await prisma.order.findMany({ where: state ? { state: state as any } : {}, orderBy: { createdAt: "desc" }, take: 200, include: { product: { select: { title: true } }, store: { select: { name: true } }, payments: true } });
-    return { items: items.map((o) => ({ ...o, shipping: undefined, explorer: o.payments[0] ? explorerTx(config.chainId, o.payments[0].txHash) : null })) };
+    return { items: items.map((o) => ({ ...o, shipping: undefined, explorer: o.payments[0] ? explorerTx(o.chainId, o.payments[0].txHash) : null })) };
   }
 
   @Get("disputes")
@@ -211,7 +215,7 @@ export class AdminController {
   async orderChain(@Param("id") id: string) {
     const o = await prisma.order.findUnique({ where: { id }, include: { events: { orderBy: [{ blockNumber: "asc" }, { logIndex: "asc" }] } } });
     if (!o) throw notFound("Order");
-    const onchain = await publicClient().readContract({ address: deployment().escrow, abi: commerceEscrowAbi, functionName: "getOrder", args: [o.onchainId as Hex] });
+    const onchain = await publicClient(o.chainId).readContract({ address: deployment(o.chainId).escrow, abi: commerceEscrowAbi, functionName: "getOrder", args: [o.onchainId as Hex] });
     return { events: o.events.map((e) => ({ ...e, blockNumber: e.blockNumber.toString() })), onchain: JSON.parse(JSON.stringify(onchain, (_, v) => (typeof v === "bigint" ? v.toString() : v))) };
   }
 }

@@ -3,7 +3,8 @@ import { AnimatePresence, motion } from "motion/react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
-import { formatUsd } from "@commerce-os/shared";
+import { ASSETS, NETWORK_LABEL, formatUsd, type Network, type PaymentAsset } from "@commerce-os/shared";
+import { payableAssets } from "@/lib/wagmi";
 import { useCart } from "@/components/cart";
 import { Bot, Check, Lock, Minus, Plus, Shield, Store } from "@/components/icons";
 import { ProductImage } from "@/components/product-image";
@@ -15,7 +16,9 @@ import type { ProductDetail } from "@/lib/types";
 export function ProductView({ p }: { p: ProductDetail }) {
   const [img, setImg] = useState(0);
   const [qty, setQty] = useState(1);
-  const [asset, setAsset] = useState<"USDG" | "ETH">(p.acceptedAssets[0]);
+  const options = payableAssets(p.acceptedAssets);
+  const [asset, setAsset] = useState<PaymentAsset>(options[0] ?? p.acceptedAssets[0]);
+  const networks = (["robinhood", "bnb"] as Network[]).filter((n) => options.some((a) => ASSETS[a].network === n));
   const { add } = useCart();
   const toast = useToast();
   const router = useRouter();
@@ -70,12 +73,20 @@ export function ProductView({ p }: { p: ProductDetail }) {
           <div className="mt-8 space-y-5 border-t hairline pt-8">
             <div>
               <p className="label">Pay with</p>
-              <div className="flex gap-2" role="radiogroup">
-                {p.acceptedAssets.map((a) => (
-                  <button key={a} role="radio" aria-checked={asset === a} onClick={() => setAsset(a)} className={`num flex-1 rounded-xl border px-4 py-3 text-left text-[13px] transition ${asset === a ? "border-champagne/60 bg-champagne/[0.06]" : "hairline hover:border-line-2"}`}>
-                    <span className="block text-porcelain">{a}</span>
-                    <span className="text-[11.5px] text-dim">{a === "USDG" ? "Stablecoin · exact USD" : "Quoted at checkout"}</span>
-                  </button>
+              {options.length === 0 && <p className="text-[13px] text-warn">This listing's payment assets aren't available on this deployment.</p>}
+              <div className="space-y-3" role="radiogroup">
+                {networks.map((n) => (
+                  <div key={n}>
+                    <p className="mb-1.5 text-[11px] text-dim">{NETWORK_LABEL[n]}</p>
+                    <div className="flex gap-2">
+                      {options.filter((a) => ASSETS[a].network === n).map((a) => (
+                        <button key={a} role="radio" aria-checked={asset === a} onClick={() => setAsset(a)} className={`num flex-1 rounded-xl border px-4 py-3 text-left text-[13px] transition ${asset === a ? "border-champagne/60 bg-champagne/[0.06]" : "hairline hover:border-line-2"}`}>
+                          <span className="block text-porcelain">{a}</span>
+                          <span className="text-[11.5px] text-dim">{ASSETS[a].kind === "stable" ? "Stablecoin · exact USD" : "Quoted at checkout"}</span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
                 ))}
               </div>
             </div>
@@ -89,7 +100,7 @@ export function ProductView({ p }: { p: ProductDetail }) {
                 Add to cart
               </button>
             </div>
-            <button className="btn btn-primary h-12 w-full text-[15px]" disabled={out} onClick={() => router.push(`/checkout?product=${p.id}&qty=${qty}&asset=${asset}`)}>
+            <button className="btn btn-primary h-12 w-full text-[15px]" disabled={out || options.length === 0} onClick={() => router.push(`/checkout?product=${p.id}&qty=${qty}&asset=${asset}`)}>
               Buy now · {formatUsd(p.priceCents * qty)}
             </button>
             {p.negotiable ? (

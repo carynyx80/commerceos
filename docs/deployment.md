@@ -19,22 +19,34 @@ Build images with `infrastructure/deployment/Dockerfile` (`--build-arg APP=api|w
 
 ## Contracts
 
+Deploy once per chain. Robinhood Chain:
+
 ```bash
 cd contracts
 DEPLOYER_PRIVATE_KEY=… QUOTE_SIGNER=0x… REGISTRAR=0x… ADMIN=<multisig> ARBITER=<arbiter> \
-USDG_ADDRESS=0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168 ETH_USD_FEED=<verified feed> \
+STABLE_ADDRESS=0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168 NATIVE_USD_FEED=<verified ETH/USD feed> \
 forge script script/Deploy.s.sol --rpc-url robinhood --broadcast --verify
+```
+
+BNB Chain (same keys; USDC has 18 decimals, read from the token):
+
+```bash
+DEPLOYER_PRIVATE_KEY=… QUOTE_SIGNER=0x… REGISTRAR=0x… ADMIN=<multisig> ARBITER=<arbiter> \
+STABLE_ADDRESS=0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d NATIVE_USD_FEED=0x0567F2323251f0Aab15c8dFb1967E4e8A7D42aeE \
+forge script script/Deploy.s.sol --rpc-url https://bsc-dataseed.bnbchain.org --broadcast --verify
 node ../scripts/gen-abis.mjs
 ```
 
-The script writes `packages/blockchain/deployments/<chainId>.json`. On mainnet it refuses to run without a real USDG address, a price feed and an `ADMIN` different from the deployer, and it transfers ownership (two-step) to `ADMIN`. The multisig must then `acceptOwnership()` on FeeController, CommerceEscrow and AgentPolicyModule.
+Then set `BNB_CHAIN_ID`/`BNB_RPC_URL` on the API and worker and `NEXT_PUBLIC_BNB_CHAIN_ID` on the web app, add `packages/blockchain/deployments/56.json` to `deployments.ts`, and fund the registrar and agent-executor keys with BNB for gas.
+
+The script writes `packages/blockchain/deployments/<chainId>.json`. On mainnets (4663, 56) it refuses to run without a real stablecoin address, a price feed and an `ADMIN` different from the deployer, and it transfers ownership (two-step) to `ADMIN`. The multisig must then `acceptOwnership()` on FeeController, CommerceEscrow and AgentPolicyModule.
 
 ## Keys
 
 | Key | Holds | Blast radius |
 |---|---|---|
 | Quote signer | Signs checkout quotes | Can price orders; cannot move funds. Rotate with `setQuoteSigner`. |
-| Registrar | `REGISTRAR_ROLE` | Can mark payout wallets active. |
+| Registrar | `REGISTRAR_ROLE` on every chain | Can mark payout wallets active. Needs gas (ETH, BNB) on each chain. |
 | Agent executor | AgentAccount `agentKey` | Can only call `agentCheckout`, inside each owner's on-chain policy. |
 | Admin multisig | Owner/roles | Fees (delayed), pause, signer rotation, arbiter roles. |
 

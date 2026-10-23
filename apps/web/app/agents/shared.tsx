@@ -1,5 +1,6 @@
 "use client";
 import { useQuery } from "@tanstack/react-query";
+import { PAYMENT_ASSETS, type PaymentAsset } from "@commerce-os/shared";
 import { api } from "@/lib/api";
 
 export interface AgentRow {
@@ -10,12 +11,13 @@ export interface AgentRow {
   description: string;
   preferences: string;
   accountAddress: string | null;
+  accountChainId: number | null;
   store: { id: string; name: string; slug: string } | null;
   policy: {
     maxPerOrderCents: number;
     rollingLimitCents: number;
     rollingWindowDays: number;
-    allowedAssets: ("USDG" | "ETH")[];
+    allowedAssets: PaymentAsset[];
     approvedCategories: string[];
     approvedStoreIds: string[];
     expiresAt: string;
@@ -47,7 +49,7 @@ export function PolicyFields({ v, set }: { v: PolicyForm; set: (p: Partial<Polic
       </div>
       <L label="Allowed payment assets">
         <div className="flex gap-2">
-          {(["USDG", "ETH"] as const).map((a) => (
+          {PAYMENT_ASSETS.map((a) => (
             <button key={a} type="button" className={`chip num !h-8 !px-3 ${v.assets.includes(a) ? "!border-champagne/60 !text-champagne" : ""}`} onClick={() => set({ assets: v.assets.includes(a) ? v.assets.filter((x) => x !== a) : [...v.assets, a] })}>{a}</button>
           ))}
         </div>
@@ -70,7 +72,7 @@ export function PolicyFields({ v, set }: { v: PolicyForm; set: (p: Partial<Polic
   );
 }
 
-export interface PolicyForm { maxPerOrder: string; rolling: string; windowDays: string; expires: string; discount: string; rounds: string; assets: ("USDG" | "ETH")[]; stores: string[]; categories: string[]; automation: boolean }
+export interface PolicyForm { maxPerOrder: string; rolling: string; windowDays: string; expires: string; discount: string; rounds: string; assets: PaymentAsset[]; stores: string[]; categories: string[]; automation: boolean }
 
 export const defaultPolicy = (): PolicyForm => ({
   maxPerOrder: "100",

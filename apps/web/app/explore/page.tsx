@@ -3,6 +3,7 @@ import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import { AnimatePresence, motion } from "motion/react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useState } from "react";
+import { ASSETS, PAYMENT_ASSETS } from "@commerce-os/shared";
 import { ProductCard } from "@/components/product-card";
 import { Close, Search } from "@/components/icons";
 import { api } from "@/lib/api";
@@ -80,8 +81,9 @@ function Explore() {
       </FilterGroup>
       <FilterGroup title="Payment">
         <Radio label="Any asset" checked={!sp.get("asset")} onClick={() => set("asset", null)} />
-        <Radio label="USDG" checked={sp.get("asset") === "USDG"} onClick={() => set("asset", "USDG")} />
-        <Radio label="ETH" checked={sp.get("asset") === "ETH"} onClick={() => set("asset", "ETH")} />
+        {PAYMENT_ASSETS.map((a) => (
+          <Radio key={a} label={`${a} · ${ASSETS[a].network === "bnb" ? "BNB Chain" : "Robinhood"}`} checked={sp.get("asset") === a} onClick={() => set("asset", a)} />
+        ))}
       </FilterGroup>
       <FilterGroup title="Availability">
         <Toggle label="In stock only" on={sp.get("inStock") === "true"} onClick={() => set("inStock", sp.get("inStock") === "true" ? null : "true")} />

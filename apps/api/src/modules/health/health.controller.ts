@@ -1,5 +1,6 @@
 import { Controller, Get } from "@nestjs/common";
-import { deploymentFor } from "@commerce-os/blockchain";
+import { deploymentFor, NETWORK_OF_CHAIN } from "@commerce-os/blockchain";
+import { enabledChains } from "@commerce-os/commerce";
 import { prisma } from "../../common/prisma";
 import { config } from "../../config";
 
@@ -14,6 +15,13 @@ export class HealthController {
     } catch {
       db = false;
     }
+    const chains = await Promise.all(
+      enabledChains().map(async (id) => {
+        const d = deploymentFor(id);
+        const cur = await prisma.indexerCursor.findUnique({ where: { id: `escrow:${id}` } }).catch(() => null);
+        return { chainId: id, network: NETWORK_OF_CHAIN[id], contracts: Boolean(d), assets: d ? [d.stableSymbol, d.nativeSymbol] : [], testToken: d?.testToken ?? null, indexer: cur ? { block: cur.blockNumber.toString(), updatedAt: cur.updatedAt } : null };
+      }),
+    );
     const cursor = await prisma.indexerCursor.findUnique({ where: { id: `escrow:${config.chainId}` } }).catch(() => null);
     const lastJob = await prisma.job.findFirst({ where: { status: "DONE" }, orderBy: { updatedAt: "desc" } }).catch(() => null);
     return {
@@ -25,6 +33,7 @@ export class HealthController {
       ai: config.openaiConfigured ? "configured" : "missing OPENAI_API_KEY",
       indexer: cursor ? { block: cursor.blockNumber.toString(), updatedAt: cursor.updatedAt } : null,
       worker: lastJob ? { lastJobAt: lastJob.updatedAt } : null,
+      chains,
     };
   }
 }

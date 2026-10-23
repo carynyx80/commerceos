@@ -41,7 +41,7 @@ export class OrdersController {
     if (o.buyerId !== a.userId) throw forbidden();
     await prisma.payment.upsert({
       where: { txHash: hash.toLowerCase() },
-      create: { orderId: o.id, txHash: hash.toLowerCase(), chainId: config.chainId, from: a.address, asset: o.asset, amount: o.amount, status: "SUBMITTED" },
+      create: { orderId: o.id, txHash: hash.toLowerCase(), chainId: o.chainId, from: a.address, asset: o.asset, amount: o.amount, status: "SUBMITTED" },
       update: {},
     });
     await enqueueJob(prisma, "payment.verify", { orderId: o.id, txHash: hash.toLowerCase() }, { idempotencyKey: `payment.verify:${hash.toLowerCase()}`, maxAttempts: 30 });

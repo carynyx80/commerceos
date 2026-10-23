@@ -116,7 +116,7 @@ const STORES: { slug: string; name: string; tagline: string; description: string
     policy: "Coffee is non-returnable once opened. Course access can be refunded within 7 days if unused.",
     products: [
       { title: "Ethiopia Guji, 250 g whole bean", category: "Coffee", price: 22, stock: 60, images: [img("1559056199-641a0ac8b55e")], description: "Washed Guji with notes of bergamot, peach and black tea.", specs: { Process: "Washed", Roast: "Light", Weight: "250 g" } },
-      { title: "Home barista course (online)", category: "Courses", price: 89, stock: 500, images: [img("1495474472287-4d71bcdd2085")], description: "Six video lessons on espresso, milk texture and latte art. Lifetime access link delivered by email after payment.", specs: { Lessons: "6", Length: "3 h 40 min", Access: "Lifetime" }, delivery: "DIGITAL", assets: ["USDG"] },
+      { title: "Home barista course (online)", category: "Courses", price: 89, stock: 500, images: [img("1495474472287-4d71bcdd2085")], description: "Six video lessons on espresso, milk texture and latte art. Lifetime access link delivered by email after payment.", specs: { Lessons: "6", Length: "3 h 40 min", Access: "Lifetime" }, delivery: "DIGITAL", assets: ["USDG", "USDC"] },
     ],
   },
 ];
@@ -167,7 +167,7 @@ async function main() {
           negotiable: Boolean(p.floor),
           images: p.images,
           specs: p.specs,
-          acceptedAssets: p.assets ?? ["USDG", "ETH"],
+          acceptedAssets: p.assets ?? ["USDG", "ETH", "USDC", "BNB"],
           deliveryType: p.delivery ?? "PHYSICAL",
           shippingInfo: p.delivery === "DIGITAL" ? "Delivered digitally after payment is confirmed." : "Ships in 2 business days. Tracked delivery.",
           featured: Boolean(p.featured),

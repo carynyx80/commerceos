@@ -16,9 +16,12 @@ enum Role {
   ADMIN
 }
 
+/// USDG + ETH settle on Robinhood Chain; USDC + BNB settle on BNB Chain.
 enum PaymentAssetKind {
   USDG
   ETH
+  USDC
+  BNB
 }
 
 enum ProductStatus {
@@ -304,6 +307,8 @@ model Agent {
   store       Store?      @relation(fields: [storeId], references: [id], onDelete: SetNull)
   /// On-chain AgentAccount address, when the owner has deployed one.
   accountAddress String?
+  /// Chain the AgentAccount lives on; autonomous payments only use assets on this chain.
+  accountChainId Int?
   createdAt   DateTime    @default(now())
   updatedAt   DateTime    @updatedAt
 
@@ -457,6 +462,8 @@ model CheckoutQuote {
   unitCents     Int
   totalCents    Int
   asset         PaymentAssetKind
+  /// Chain the quote is payable on (derived from the asset).
+  chainId       Int
   /// Amount in asset base units, as a decimal string.
   amount        String
   ethUsdPrice8  String?
@@ -485,6 +492,8 @@ model Order {
   totalCents    Int
   feeBps        Int
   asset         PaymentAssetKind
+  /// Chain whose escrow holds this order (Robinhood Chain for USDG/ETH, BNB Chain for USDC/BNB).
+  chainId       Int
   amount        String
   sellerAddress String
   state         OrderState       @default(AWAITING_PAYMENT)
@@ -504,6 +513,7 @@ model Order {
   @@index([buyerId, createdAt])
   @@index([storeId, createdAt])
   @@index([state])
+  @@index([chainId, state])
 }
 
 model OrderTransition {

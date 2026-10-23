@@ -222,8 +222,12 @@ export default async function Home() {
         <div className="surface rounded-[28px] p-8 sm:p-10">
           <p className="eyebrow">Supported payments</p>
           <div className="mt-6 space-y-3">
+            <p className="text-[11.5px] text-dim">Robinhood Chain</p>
             <Asset sym="USDG" name="Global Dollar" note="ERC-20 · 6 decimals · approve + pay" />
             <Asset sym="ETH" name="Ether" note="Native · priced from a validated oracle quote" />
+            <p className="pt-2 text-[11.5px] text-dim">BNB Chain</p>
+            <Asset sym="USDC" name="USD Coin" note="ERC-20 · 18 decimals on BNB Chain · approve + pay" />
+            <Asset sym="BNB" name="BNB" note="Native · priced from the Chainlink BNB/USD feed" />
           </div>
           <p className="mt-6 text-[12.5px] text-dim">Prices are listed in USD. Quotes lock the asset amount for a short window and expire rather than drift.</p>
         </div>

@@ -9,15 +9,19 @@ import {Treasury} from "../src/Treasury.sol";
 import {DisputeResolver} from "../src/DisputeResolver.sol";
 import {AgentPolicyModule} from "../src/AgentPolicyModule.sol";
 import {AgentAccountFactory} from "../src/AgentAccountFactory.sol";
-import {TestUSDG} from "../src/mocks/TestUSDG.sol";
+import {TestStable} from "../src/mocks/TestStable.sol";
 import {MockPriceFeed} from "../src/mocks/MockPriceFeed.sol";
 import {IPriceFeed} from "../src/interfaces/IPriceFeed.sol";
 
-/// @notice Deploys Commerce OS.
-///   Env: DEPLOYER_PRIVATE_KEY, QUOTE_SIGNER (address), REGISTRAR (address, the API's registry key),
-///        ADMIN (multisig; defaults to deployer on dev chains only), ARBITER, USDG_ADDRESS (mainnet),
-///        ETH_USD_FEED (mainnet), SEED_MERCHANTS (comma-separated payout addresses, dev only).
-///   Refuses to run on mainnet (4663) without USDG_ADDRESS, ETH_USD_FEED, and an ADMIN distinct from the deployer.
+/// @notice Deploys Commerce OS on one chain. The same contracts serve Robinhood Chain (USDG + ETH)
+///         and BNB Chain (USDC + BNB); only the stablecoin and the native/USD feed differ.
+///   Env: DEPLOYER_PRIVATE_KEY, QUOTE_SIGNER (address), REGISTRAR (address, the worker's registry key),
+///        ADMIN (multisig; defaults to deployer on dev chains only), ARBITER,
+///        STABLE_ADDRESS (real stablecoin; empty deploys a labelled no-value test token; USDG_ADDRESS accepted),
+///        NATIVE_USD_FEED (Chainlink-style feed; empty deploys a mock on dev chains; ETH_USD_FEED accepted),
+///        STABLE_SYMBOL / STABLE_DECIMALS / NATIVE_SYMBOL / MOCK_NATIVE_USD (test-token and mock settings),
+///        SEED_MERCHANTS (comma-separated payout addresses, dev only).
+///   Refuses mainnets (4663 Robinhood, 56 BNB Chain) without a real stablecoin, a real feed and a separate ADMIN.
 contract Deploy is Script {
     struct Cfg {
         uint256 pk;
@@ -30,6 +34,9 @@ contract Deploy is Script {
         address ethFeed;
         bool mainnet;
         bool testToken;
+        string stableSymbol;
+        uint8 stableDecimals;
+        string nativeSymbol;
     }
 
     struct Out {
@@ -50,18 +57,26 @@ contract Deploy is Script {
         c.quoteSigner = vm.envAddress("QUOTE_SIGNER");
         c.registrar = vm.envOr("REGISTRAR", c.deployer);
         c.arbiter = vm.envOr("ARBITER", c.admin);
-        c.mainnet = block.chainid == 4663;
-        c.usdg = vm.envOr("USDG_ADDRESS", address(0));
-        c.ethFeed = vm.envOr("ETH_USD_FEED", address(0));
+        c.mainnet = block.chainid == 4663 || block.chainid == 56;
+        c.usdg = vm.envOr("STABLE_ADDRESS", vm.envOr("USDG_ADDRESS", address(0)));
+        c.ethFeed = vm.envOr("NATIVE_USD_FEED", vm.envOr("ETH_USD_FEED", address(0)));
+        bool bnb = block.chainid == 56 || block.chainid == 97 || block.chainid == 31338;
+        c.stableSymbol = vm.envOr("STABLE_SYMBOL", bnb ? string("USDC") : string("USDG"));
+        c.stableDecimals = uint8(vm.envOr("STABLE_DECIMALS", bnb ? uint256(18) : uint256(6)));
+        c.nativeSymbol = vm.envOr("NATIVE_SYMBOL", bnb ? string("BNB") : string("ETH"));
         if (c.mainnet) {
-            require(c.usdg != address(0) && c.ethFeed != address(0), "mainnet needs USDG_ADDRESS and ETH_USD_FEED");
+            require(c.usdg != address(0) && c.ethFeed != address(0), "mainnet needs STABLE_ADDRESS and NATIVE_USD_FEED");
             require(c.admin != c.deployer, "mainnet ADMIN must be a multisig, not the deployer");
         }
 
         vm.startBroadcast(c.pk);
         c.testToken = c.usdg == address(0);
-        if (c.testToken) c.usdg = address(new TestUSDG());
-        if (c.ethFeed == address(0)) c.ethFeed = address(new MockPriceFeed(8, 2_500e8));
+        if (c.testToken) {
+            c.usdg = address(new TestStable(string.concat("Test ", c.stableSymbol, " (no value)"), string.concat("t", c.stableSymbol), c.stableDecimals));
+        } else {
+            c.stableDecimals = TestStable(c.usdg).decimals(); // trust the real token, not the env
+        }
+        if (c.ethFeed == address(0)) c.ethFeed = address(new MockPriceFeed(8, int256(vm.envOr("MOCK_NATIVE_USD", bnb ? uint256(729e8) : uint256(2_500e8)))));
         Out memory o = _deploy(c);
         _wire(c, o);
         vm.stopBroadcast();
@@ -109,7 +124,10 @@ contract Deploy is Script {
         vm.serializeUint(k, "chainId", block.chainid);
         vm.serializeUint(k, "deployedAtBlock", block.number);
         vm.serializeBool(k, "testToken", c.testToken);
-        vm.serializeAddress(k, "usdg", c.usdg);
+        vm.serializeAddress(k, "stable", c.usdg);
+        vm.serializeString(k, "stableSymbol", c.stableSymbol);
+        vm.serializeUint(k, "stableDecimals", c.stableDecimals);
+        vm.serializeString(k, "nativeSymbol", c.nativeSymbol);
         vm.serializeAddress(k, "escrow", address(o.escrow));
         vm.serializeAddress(k, "merchantRegistry", address(o.registry));
         vm.serializeAddress(k, "feeController", address(o.fees));

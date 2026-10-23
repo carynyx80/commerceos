@@ -1,8 +1,8 @@
 import { Body, Controller, Get, HttpCode, Param, Patch, Post, Query } from "@nestjs/common";
 import { getAddress, type Hex } from "viem";
 import { z } from "zod";
-import { agentAccountAbi, agentPolicyModuleAbi } from "@commerce-os/blockchain";
-import { acceptOffer, checkSpendingPolicy, deployment, getNegotiation, openNegotiation, publicClient, rejectNegotiation, submitOffer } from "@commerce-os/commerce";
+import { agentAccountAbi, agentPolicyModuleAbi, deploymentFor, NETWORK_OF_CHAIN } from "@commerce-os/blockchain";
+import { acceptOffer, checkSpendingPolicy, deployment, enabledChains, getNegotiation, openNegotiation, publicClient, rejectNegotiation, submitOffer } from "@commerce-os/commerce";
 import { audit, enqueueJob, notify } from "@commerce-os/database";
 import { agentPolicySchema, createAgentSchema, offerSchema } from "@commerce-os/shared";
 import { prisma } from "../../common/prisma";
@@ -25,20 +25,31 @@ const aiReady = () => Boolean(process.env.OPENAI_API_KEY);
 export class AgentsController {
   @Get("agents/config")
   config() {
-    let d: ReturnType<typeof deployment> | null = null;
-    try {
-      d = deployment();
-    } catch {
-      d = null;
-    }
+    const networks = enabledChains().map((chainId) => {
+      const d = deploymentFor(chainId);
+      return {
+        chainId,
+        network: NETWORK_OF_CHAIN[chainId],
+        deployed: Boolean(d),
+        accountFactory: d?.accountFactory ?? null,
+        policyModule: d?.policyModule ?? null,
+        stable: d?.stable ?? null,
+        stableSymbol: d?.stableSymbol ?? null,
+        stableDecimals: d?.stableDecimals ?? null,
+        nativeSymbol: d?.nativeSymbol ?? null,
+      };
+    });
+    const primary = networks[0];
     return {
       aiConfigured: aiReady(),
       aiModel: aiReady() ? process.env.OPENAI_MODEL || "gpt-4.1-mini" : null,
-      autonomousPaymentsEnabled: process.env.AUTONOMOUS_PAYMENTS_ENABLED === "true" && Boolean(process.env.AGENT_EXECUTOR) && Boolean(d),
+      autonomousPaymentsEnabled: process.env.AUTONOMOUS_PAYMENTS_ENABLED === "true" && Boolean(process.env.AGENT_EXECUTOR) && networks.some((n) => n.deployed),
       executor: process.env.AGENT_EXECUTOR ?? null,
-      accountFactory: d?.accountFactory ?? null,
-      policyModule: d?.policyModule ?? null,
-      usdg: d?.usdg ?? null,
+      networks,
+      // single-network fields (Robinhood Chain), kept for older clients
+      accountFactory: primary?.accountFactory ?? null,
+      policyModule: primary?.policyModule ?? null,
+      usdg: primary?.stable ?? null,
     };
   }
 
@@ -89,10 +100,14 @@ export class AgentsController {
     let onchain: unknown = null;
     if (agent.accountAddress) {
       try {
-        const d = deployment();
-        const p = await publicClient().readContract({ address: d.policyModule, abi: agentPolicyModuleAbi, functionName: "policies", args: [agent.accountAddress as Hex] });
-        const spent = await publicClient().readContract({ address: d.policyModule, abi: agentPolicyModuleAbi, functionName: "spentInWindow", args: [agent.accountAddress as Hex] });
-        onchain = { maxPerOrderUsd: p[0].toString(), rollingLimitUsd: p[1].toString(), window: Number(p[2]), expiresAt: Number(p[3]), allowedAssets: p[4], merchantAllowlist: p[5], revoked: p[6], nonce: p[7].toString(), spentInWindowUsd: spent.toString() };
+        const cid = agent.accountChainId ?? enabledChains()[0];
+        const d = deployment(cid);
+        const p = await publicClient(cid).readContract({ address: d.policyModule, abi: agentPolicyModuleAbi, functionName: "policies", args: [agent.accountAddress as Hex] });
+        const spent = await publicClient(cid).readContract({ address: d.policyModule, abi: agentPolicyModuleAbi, functionName: "spentInWindow", args: [agent.accountAddress as Hex] });
+        onchain = {
+          chainId: cid,
+          stableSymbol: d.stableSymbol,
+          nativeSymbol: d.nativeSymbol, maxPerOrderUsd: p[0].toString(), rollingLimitUsd: p[1].toString(), window: Number(p[2]), expiresAt: Number(p[3]), allowedAssets: p[4], merchantAllowlist: p[5], revoked: p[6], nonce: p[7].toString(), spentInWindowUsd: spent.toString() };
       } catch {
         onchain = { error: "unreachable" };
       }
@@ -153,9 +168,11 @@ export class AgentsController {
   @HttpCode(200)
   async linkAccount(@CurrentUser() a: AuthContext, @Param("id") id: string, @Body() body: unknown) {
     const agent = await ownedAgent(a, id);
-    const { accountAddress } = parse(z.object({ accountAddress: z.string().regex(/^0x[0-9a-fA-F]{40}$/) }), body);
+    const { accountAddress, chainId: reqChain } = parse(z.object({ accountAddress: z.string().regex(/^0x[0-9a-fA-F]{40}$/), chainId: z.number().int().optional() }), body);
+    const chainId = reqChain ?? enabledChains()[0];
+    if (!enabledChains().includes(chainId)) throw badRequest("CHAIN_DISABLED", `Chain ${chainId} is not enabled.`);
     const addr = getAddress(accountAddress);
-    const client = publicClient();
+    const client = publicClient(chainId);
     const [owner, key, escrow] = await Promise.all([
       client.readContract({ address: addr, abi: agentAccountAbi, functionName: "owner" }),
       client.readContract({ address: addr, abi: agentAccountAbi, functionName: "agentKey" }),
@@ -164,10 +181,10 @@ export class AgentsController {
       throw badRequest("NOT_AN_ACCOUNT", "That address is not a Commerce OS agent account on this network.");
     });
     if (owner.toLowerCase() !== a.address) throw badRequest("WRONG_OWNER", "That account is owned by a different wallet.");
-    if (escrow.toLowerCase() !== deployment().escrow.toLowerCase()) throw badRequest("WRONG_ESCROW", "That account is bound to a different escrow.");
+    if (escrow.toLowerCase() !== deployment(chainId).escrow.toLowerCase()) throw badRequest("WRONG_ESCROW", "That account is bound to a different escrow.");
     if (!process.env.AGENT_EXECUTOR || key.toLowerCase() !== process.env.AGENT_EXECUTOR.toLowerCase()) throw badRequest("WRONG_AGENT_KEY", "Set the account's agent key to the Commerce OS executor first.");
-    await prisma.agent.update({ where: { id: agent.id }, data: { accountAddress: addr.toLowerCase() } });
-    await audit(prisma, { actorId: a.userId, actorType: "user", action: "agent.link_account", target: id, data: { addr } });
+    await prisma.agent.update({ where: { id: agent.id }, data: { accountAddress: addr.toLowerCase(), accountChainId: chainId } });
+    await audit(prisma, { actorId: a.userId, actorType: "user", action: "agent.link_account", target: id, data: { addr, chainId } });
     return { ok: true };
   }
 
@@ -230,7 +247,7 @@ export class AgentsController {
 
   @Post("negotiations")
   async open(@CurrentUser() a: AuthContext, @Body() body: unknown) {
-    const i = parse(z.object({ productId: z.string(), quantity: z.number().int().min(1).max(10).default(1), asset: z.enum(["USDG", "ETH"]).default("USDG") }), body);
+    const i = parse(z.object({ productId: z.string(), quantity: z.number().int().min(1).max(10).default(1), asset: z.enum(["USDG", "ETH", "USDC", "BNB"]).default("USDG") }), body);
     return openNegotiation({ buyerId: a.userId, ...i });
   }
 

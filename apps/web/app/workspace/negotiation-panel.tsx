@@ -4,7 +4,8 @@ import { AnimatePresence, motion } from "motion/react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
-import { formatUsd } from "@commerce-os/shared";
+import { formatUsd, type PaymentAsset } from "@commerce-os/shared";
+import { payableAssets } from "@/lib/wagmi";
 import { Bot, Check } from "@/components/icons";
 import { ProductImage } from "@/components/product-image";
 import { useToast } from "@/components/toast";
@@ -19,7 +20,7 @@ interface NegView {
   listPriceCents: number;
   storeName: string;
   quantity: number;
-  asset: "USDG" | "ETH";
+  asset: PaymentAsset;
   agreedCents: number | null;
   expiresAt: string;
   sellerAgentActive: boolean;
@@ -30,7 +31,7 @@ interface NegView {
 export function NegotiationPanel({ productId, negotiationId }: { productId: string | null; negotiationId: string | null }) {
   const router = useRouter();
   const toast = useToast();
-  const [asset, setAsset] = useState<"USDG" | "ETH">("USDG");
+  const [asset, setAsset] = useState<PaymentAsset | null>(null);
   const [price, setPrice] = useState("");
   const [busy, setBusy] = useState(false);
   const product = useQuery({ queryKey: ["product", productId], enabled: !!productId && !negotiationId, queryFn: () => api<ProductDetail>(`/catalog/products/${productId}`) });
@@ -44,7 +45,7 @@ export function NegotiationPanel({ productId, negotiationId }: { productId: stri
   async function start() {
     setBusy(true);
     try {
-      const n = await api<{ id: string }>("/negotiations", { json: { productId, quantity: 1, asset } });
+      const n = await api<{ id: string }>("/negotiations", { json: { productId, quantity: 1, asset: asset ?? payableAssets(product.data?.acceptedAssets ?? [])[0] ?? "USDG" } });
       router.replace(`/workspace?negotiation=${n.id}`);
     } catch (e: any) {
       toast({ title: "Could not start negotiation", body: e.message, tone: "error" });
@@ -77,7 +78,7 @@ export function NegotiationPanel({ productId, negotiationId }: { productId: stri
           <div className="surface mt-6 rounded-2xl p-5">
             <p className="text-[13.5px] text-mist">Open a structured negotiation with {p.store.name}. Offers are signed into a terms hash, expire, and the seller answers within limits they set.</p>
             <div className="mt-4 flex gap-2">
-              {p.acceptedAssets.map((a) => <button key={a} onClick={() => setAsset(a)} className={`chip num !h-8 !px-3 ${asset === a ? "!border-champagne/60 !text-champagne" : ""}`}>{a}</button>)}
+              {payableAssets(p.acceptedAssets).map((a) => <button key={a} onClick={() => setAsset(a)} className={`chip num !h-8 !px-3 ${(asset ?? payableAssets(p.acceptedAssets)[0]) === a ? "!border-champagne/60 !text-champagne" : ""}`}>{a}</button>)}
             </div>
             <button className="btn btn-primary mt-5" disabled={busy} onClick={start}>Start negotiation</button>
           </div>

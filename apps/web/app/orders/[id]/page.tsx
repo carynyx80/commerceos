@@ -3,9 +3,11 @@ import { useQuery } from "@tanstack/react-query";
 import Link from "next/link";
 import { use, useState } from "react";
 import type { Hex } from "viem";
-import { usePublicClient, useReadContract, useWriteContract } from "wagmi";
+import { useAccount, useReadContract, useSwitchChain, useWriteContract } from "wagmi";
+import { getPublicClient } from "wagmi/actions";
 import { commerceEscrowAbi, deploymentFor, explorerTx } from "@commerce-os/blockchain";
-import { ORDER_STATE_LABEL, formatUnits, formatUsd, type OrderState } from "@commerce-os/shared";
+import { ASSETS, ORDER_STATE_LABEL, formatUnits, formatUsd, type OrderState } from "@commerce-os/shared";
+import { chainById } from "@commerce-os/blockchain";
 import { Bot, Check, Shield } from "@/components/icons";
 import { OrderStateChip } from "@/components/order-state";
 import { ProductImage } from "@/components/product-image";
@@ -14,7 +16,7 @@ import { useToast } from "@/components/toast";
 import { api } from "@/lib/api";
 import { shortAddr } from "@/lib/format";
 import type { OrderView } from "@/lib/types";
-import { CHAIN_ID } from "@/lib/wagmi";
+import { wagmiConfig } from "@/lib/wagmi";
 
 type Detail = OrderView & { role: "buyer" | "seller" | "admin"; shipping: Record<string, string> | null };
 
@@ -31,15 +33,17 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
 
 function Order({ id }: { id: string }) {
   const q = useQuery({ queryKey: ["order", id], queryFn: () => api<Detail>(`/orders/${id}`), refetchInterval: 4000 });
-  const d = deploymentFor(CHAIN_ID);
+  const orderChain = q.data?.chainId;
+  const d = orderChain ? deploymentFor(orderChain) : null;
   const onchain = useReadContract({
     address: d?.escrow,
     abi: commerceEscrowAbi,
     functionName: "getOrder",
     args: q.data ? [q.data.onchainId as Hex] : undefined,
+    chainId: orderChain,
     query: { enabled: !!q.data && !!d, refetchInterval: 6000 },
   });
-  const windows = useReadContract({ address: d?.escrow, abi: commerceEscrowAbi, functionName: "acceptWindow", query: { enabled: !!d } });
+  const windows = useReadContract({ address: d?.escrow, abi: commerceEscrowAbi, functionName: "acceptWindow", chainId: orderChain, query: { enabled: !!d } });
   if (q.isLoading) return <p className="px-4 py-32 text-center text-mist">Loading…</p>;
   if (q.isError || !q.data) return <p className="px-4 py-32 text-center text-mist">Order not found, or you do not have access.</p>;
   const o = q.data;
@@ -82,7 +86,7 @@ function Order({ id }: { id: string }) {
                 <li key={i} className="flex items-center justify-between gap-4">
                   <span><span className="text-mist">{ORDER_STATE_LABEL[t.from as OrderState] ?? t.from}</span> → {ORDER_STATE_LABEL[t.to as OrderState] ?? t.to}</span>
                   <span className="num text-[11.5px] text-dim">
-                    {t.txHash ? <TxLink hash={t.txHash} /> : t.source} · {new Date(t.createdAt).toLocaleString()}
+                    {t.txHash ? <TxLink hash={t.txHash} chainId={o.chainId} /> : t.source} · {new Date(t.createdAt).toLocaleString()}
                   </span>
                 </li>
               ))}
@@ -93,11 +97,12 @@ function Order({ id }: { id: string }) {
           <section className="surface rounded-2xl p-5 text-[13.5px]">
             <h2 className="eyebrow mb-4">Payment</h2>
             <Row k="Total" v={formatUsd(o.totalCents)} />
-            <Row k="Paid in" v={o.asset === "USDG" ? `${formatUnits(BigInt(o.amount), 6, 2)} USDG` : `${formatUnits(BigInt(o.amount), 18, 6)} ETH`} />
+            <Row k="Network" v={chainById(o.chainId).name} />
+            <Row k="Paid in" v={ASSETS[o.asset].kind === "stable" ? `${formatUnits(BigInt(o.amount), deploymentFor(o.chainId)?.stableDecimals ?? ASSETS[o.asset].defaultDecimals, 2)} ${o.asset}` : `${formatUnits(BigInt(o.amount), 18, 6)} ${o.asset}`} />
             <Row k="Protocol fee" v={`${o.feeBps / 100}% of seller proceeds`} />
             <Row k="Seller wallet" v={shortAddr(o.sellerAddress)} />
             <Row k="Escrow order" v={shortAddr(o.onchainId)} />
-            {o.payments.map((p) => <Row key={p.txHash} k={`Payment · ${p.status.toLowerCase()}`} v={<TxLink hash={p.txHash} />} />)}
+            {o.payments.map((p) => <Row key={p.txHash} k={`Payment · ${p.status.toLowerCase()}`} v={<TxLink hash={p.txHash} chainId={o.chainId} />} />)}
           </section>
           {o.shipping && (
             <section className="surface rounded-2xl p-5 text-[13.5px]">
@@ -120,9 +125,11 @@ function Order({ id }: { id: string }) {
 }
 
 function Actions({ o, refetch, fundedAt, acceptWindow }: { o: Detail; refetch: () => void; fundedAt: number; acceptWindow: number }) {
-  const d = deploymentFor(CHAIN_ID)!;
+  const d = deploymentFor(o.chainId)!;
   const { writeContractAsync } = useWriteContract();
-  const client = usePublicClient();
+  const { chainId: walletChain } = useAccount();
+  const { switchChainAsync } = useSwitchChain();
+  const client = getPublicClient(wagmiConfig, { chainId: o.chainId });
   const toast = useToast();
   const [busy, setBusy] = useState<string | null>(null);
   const [reason, setReason] = useState("");
@@ -133,7 +140,9 @@ function Actions({ o, refetch, fundedAt, acceptWindow }: { o: Detail; refetch: (
   async function chain(label: string, fn: "confirmDelivery" | "buyerCancel" | "openDispute" | "accept" | "markFulfilled" | "sellerCancel") {
     setBusy(label);
     try {
-      const h = await writeContractAsync({ address: d.escrow, abi: commerceEscrowAbi, functionName: fn, args: [id] });
+      // Escrow actions happen on the order's own network.
+      if (walletChain !== o.chainId) await switchChainAsync({ chainId: o.chainId });
+      const h = await writeContractAsync({ address: d.escrow, abi: commerceEscrowAbi, functionName: fn, args: [id], chainId: o.chainId });
       const r = await client!.waitForTransactionReceipt({ hash: h });
       if (r.status !== "success") throw new Error("Transaction reverted");
       toast({ title: `${label} submitted`, body: "The order updates once the event is confirmed.", tone: "ok" });
@@ -226,7 +235,7 @@ function Row({ k, v }: { k: string; v: React.ReactNode }) {
   );
 }
 
-function TxLink({ hash }: { hash: string }) {
-  const url = explorerTx(CHAIN_ID, hash);
+function TxLink({ hash, chainId }: { hash: string; chainId: number }) {
+  const url = explorerTx(chainId, hash);
   return url ? <a href={url} target="_blank" rel="noreferrer" className="text-sage hover:underline">{shortAddr(hash)}</a> : <span title={hash}>{shortAddr(hash)}</span>;
 }

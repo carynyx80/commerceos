@@ -1,6 +1,6 @@
 # Commerce OS
 
-**Commerce, without boundaries.** An AI-native Web3 marketplace on Robinhood Chain: people and businesses buy, sell and negotiate, in person or through AI agents, and settle in USDG or ETH through on-chain escrow.
+**Commerce, without boundaries.** An AI-native Web3 marketplace: people and businesses buy, sell and negotiate, in person or through AI agents, and settle through on-chain escrow in **USDG or ETH on Robinhood Chain**, or **USDC or BNB on BNB Chain**.
 
 > Status: feature-complete on a local devnet with automated tests. **Contracts are unaudited.** Not ready for real funds — see [docs/engineering-report.md](docs/engineering-report.md).
 
@@ -14,7 +14,7 @@
 | `packages/database` | Prisma schema + migrations, job queue, audit, notifications, local Postgres launcher, fixtures |
 | `packages/commerce` | Checkout (server pricing, EIP-712 quotes, inventory reservation), negotiation engine, spending-policy mirror, chain client |
 | `packages/agent-core` | OpenAI tool-calling orchestrator, agent tools, autonomous payment executor |
-| `packages/blockchain` | Chain config (Robinhood 4663/46630, Anvil), ABIs, deployments, quote typing, event-derived order state |
+| `packages/blockchain` | Chain config (Robinhood 4663/46630, BNB Chain 56/97, local 31337/31338), ABIs, per-chain deployments, quote typing, event-derived order state |
 | `packages/shared` | Money math, order state machine, zod schemas, seller decision function |
 | `contracts` | Foundry: CommerceEscrow, MerchantRegistry, FeeController, Treasury, DisputeResolver, AgentPolicyModule, AgentAccount, AgentAccountFactory |
 | `infrastructure` | Dockerfile, docker-compose, monitoring notes |
@@ -28,7 +28,7 @@ Requirements: Node 22, Foundry. No Docker needed.
 npm install
 npm run db:start            # embedded Postgres on :54330 (leave running)
 npm run db:migrate && npm run db:seed
-./scripts/dev-chain.sh      # Anvil on :8545 + contract deploy + throwaway dev keys
+./scripts/dev-chain.sh      # two Anvil chains (:8545 Robinhood stand-in, :8546 BNB stand-in) + deploys + dev keys
 ```
 
 Create `apps/api/.env` and `apps/worker/.env` from `.env.example` (the dev-chain script prints the keys into `.env.local-chain`), then:
@@ -46,10 +46,21 @@ Set `OPENAI_API_KEY` to enable the shopping agent. Without it the workspace show
 ## Tests
 
 ```bash
-npm run test:contracts                       # 40 unit + fuzz tests, 3 invariants
+npm run test:contracts                       # 46 unit + fuzz tests (incl. BNB Chain), 3 invariants
 npx vitest run --dir packages/shared         # money, state machine, seller decisions
-npm run test:e2e -w @commerce-os/api         # 19 end-to-end journeys against the live local stack
+npm run test:e2e -w @commerce-os/api         # 23 end-to-end journeys on two local chains
 ```
+
+## Networks and assets
+
+| Asset | Network | Kind | Decimals |
+|---|---|---|---|
+| USDG | Robinhood Chain (4663 · testnet 46630) | stablecoin | 6 |
+| ETH | Robinhood Chain | native | 18 |
+| USDC | BNB Chain (56 · testnet 97) | stablecoin | **18** (Binance-Peg USDC) |
+| BNB | BNB Chain | native | 18 |
+
+The same contracts are deployed on each chain; only the stablecoin and the native/USD price feed differ. An order lives on one chain, chosen by the asset; checkout switches the wallet to that network. Quote signatures are bound to chain id and escrow address, so a quote for one chain can't be paid on the other. BNB Chain is optional: set `BNB_CHAIN_ID` (API/worker) and `NEXT_PUBLIC_BNB_CHAIN_ID` (web) to enable it.
 
 ## Key design decisions
 

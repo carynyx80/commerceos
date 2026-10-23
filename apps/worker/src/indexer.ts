@@ -1,14 +1,16 @@
 import { decodeEventLog, type Log } from "viem";
 import { commerceEscrowAbi, deriveOrderState } from "@commerce-os/blockchain";
-import { chainConfig, deployment, publicClient } from "@commerce-os/commerce";
+import { deployment, publicClient } from "@commerce-os/commerce";
 import { audit, notify, prisma, type OrderState } from "@commerce-os/database";
 import { formatUsd } from "@commerce-os/shared";
 
-const CONFIRMATIONS = BigInt(process.env.CONFIRMATIONS ?? (chainConfig.chainId === 31337 ? 0 : 3));
+const LOCAL = new Set([31337, 31338]);
+/** Blocks before an event is final. BNB Chain finalizes fast but reorgs of a few blocks happen; be conservative. */
+const confirmationsFor = (chainId: number) => BigInt(process.env.CONFIRMATIONS ?? (LOCAL.has(chainId) ? 0 : chainId === 56 || chainId === 97 ? 15 : 3));
 const MAX_RANGE = BigInt(process.env.INDEXER_MAX_RANGE ?? 2_000);
 const REORG_REWIND = 64n;
 
-const cursorId = () => `escrow:${chainConfig.chainId}`;
+const cursorId = (chainId: number) => `escrow:${chainId}`;
 
 /**
  * Index CommerceEscrow events up to (head - CONFIRMATIONS). Idempotent: events are unique by
@@ -16,25 +18,25 @@ const cursorId = () => `escrow:${chainConfig.chainId}`;
  * Reorgs: if the stored cursor's block hash no longer matches the chain, rewind and drop events
  * above the rewind point, then re-index.
  */
-export async function indexOnce(log: (m: string) => void): Promise<number> {
-  const d = deployment();
-  const client = publicClient();
+export async function indexOnce(chainId: number, log: (m: string) => void): Promise<number> {
+  const d = deployment(chainId);
+  const client = publicClient(chainId);
   const head = await client.getBlockNumber();
-  const safe = head - CONFIRMATIONS;
+  const safe = head - confirmationsFor(chainId);
   if (safe < 0n) return 0;
 
-  let cursor = await prisma.indexerCursor.findUnique({ where: { id: cursorId() } });
+  let cursor = await prisma.indexerCursor.findUnique({ where: { id: cursorId(chainId) } });
   let from = cursor ? cursor.blockNumber + 1n : BigInt(d.deployedAtBlock);
 
   if (cursor) {
     const b = await client.getBlock({ blockNumber: cursor.blockNumber }).catch(() => null);
     if (!b || b.hash !== cursor.blockHash) {
       const rewindTo = cursor.blockNumber > REORG_REWIND ? cursor.blockNumber - REORG_REWIND : BigInt(d.deployedAtBlock);
-      log(`reorg detected at ${cursor.blockNumber}; rewinding to ${rewindTo}`);
-      const affected = await prisma.escrowEvent.findMany({ where: { chainId: chainConfig.chainId, blockNumber: { gt: rewindTo } }, select: { orderId: true } });
-      await prisma.escrowEvent.deleteMany({ where: { chainId: chainConfig.chainId, blockNumber: { gt: rewindTo } } });
+      log(`chain ${chainId}: reorg detected at ${cursor.blockNumber}; rewinding to ${rewindTo}`);
+      const affected = await prisma.escrowEvent.findMany({ where: { chainId: chainId, blockNumber: { gt: rewindTo } }, select: { orderId: true } });
+      await prisma.escrowEvent.deleteMany({ where: { chainId: chainId, blockNumber: { gt: rewindTo } } });
       const rb = await client.getBlock({ blockNumber: rewindTo });
-      cursor = await prisma.indexerCursor.update({ where: { id: cursorId() }, data: { blockNumber: rewindTo, blockHash: rb.hash! } });
+      cursor = await prisma.indexerCursor.update({ where: { id: cursorId(chainId) }, data: { blockNumber: rewindTo, blockHash: rb.hash! } });
       for (const id of new Set(affected.map((a) => a.orderId).filter(Boolean) as string[])) await syncOrder(id, log);
       from = rewindTo + 1n;
     }
@@ -53,12 +55,13 @@ export async function indexOnce(log: (m: string) => void): Promise<number> {
     }
     const orderOnchainId = (ev.args.orderId as string | undefined)?.toLowerCase();
     if (!orderOnchainId) continue; // admin events
-    const order = await prisma.order.findFirst({ where: { onchainId: { equals: orderOnchainId, mode: "insensitive" } } });
+    // An order only counts on the chain its quote was signed for.
+    const order = await prisma.order.findFirst({ where: { chainId, onchainId: { equals: orderOnchainId, mode: "insensitive" } } });
     const args = JSON.parse(JSON.stringify(ev.args, (_, v) => (typeof v === "bigint" ? v.toString() : v)));
     await prisma.escrowEvent.upsert({
-      where: { chainId_txHash_logIndex: { chainId: chainConfig.chainId, txHash: l.transactionHash!, logIndex: l.logIndex! } },
+      where: { chainId_txHash_logIndex: { chainId: chainId, txHash: l.transactionHash!, logIndex: l.logIndex! } },
       create: {
-        chainId: chainConfig.chainId,
+        chainId: chainId,
         blockNumber: l.blockNumber!,
         blockHash: l.blockHash!,
         txHash: l.transactionHash!,
@@ -71,13 +74,13 @@ export async function indexOnce(log: (m: string) => void): Promise<number> {
       update: {},
     });
     if (order) touched.add(order.id);
-    else log(`event ${ev.eventName} for unknown order ${orderOnchainId}`);
+    else log(`chain ${chainId}: event ${ev.eventName} for unknown order ${orderOnchainId}`);
   }
 
   const tb = await client.getBlock({ blockNumber: to });
   await prisma.indexerCursor.upsert({
-    where: { id: cursorId() },
-    create: { id: cursorId(), blockNumber: to, blockHash: tb.hash! },
+    where: { id: cursorId(chainId) },
+    create: { id: cursorId(chainId), blockNumber: to, blockHash: tb.hash! },
     update: { blockNumber: to, blockHash: tb.hash! },
   });
   for (const id of touched) await syncOrder(id, log);
@@ -97,7 +100,7 @@ const NOTICES: Partial<Record<OrderState, (title: string, total: string) => { bu
 export async function syncOrder(orderId: string, log: (m: string) => void) {
   const order = await prisma.order.findUnique({ where: { id: orderId }, include: { product: true, store: { include: { merchant: true } } } });
   if (!order) return;
-  const events = await prisma.escrowEvent.findMany({ where: { orderId, removed: false } });
+  const events = await prisma.escrowEvent.findMany({ where: { orderId, chainId: order.chainId, removed: false } });
   const funded = events.find((e) => e.name === "OrderFunded");
   if (funded) {
     const a = funded.args as Record<string, string>;
@@ -128,7 +131,7 @@ export async function syncOrder(orderId: string, log: (m: string) => void) {
       await tx.payment.updateMany({ where: { orderId, txHash: funded.txHash.toLowerCase() }, data: { status: "CONFIRMED" } });
       const exists = await tx.payment.findUnique({ where: { txHash: funded.txHash.toLowerCase() } });
       if (!exists) {
-        await tx.payment.create({ data: { orderId, txHash: funded.txHash.toLowerCase(), chainId: chainConfig.chainId, from: order.buyerAddress, asset: order.asset, amount: order.amount, status: "CONFIRMED", byAgent: Boolean(order.agentId) } });
+        await tx.payment.create({ data: { orderId, txHash: funded.txHash.toLowerCase(), chainId: order.chainId, from: order.buyerAddress, asset: order.asset, amount: order.amount, status: "CONFIRMED", byAgent: Boolean(order.agentId) } });
       }
       await tx.checkoutQuote.update({ where: { id: order.quoteId }, data: { usedAt: new Date() } });
       if (prev === "CANCELLED") {

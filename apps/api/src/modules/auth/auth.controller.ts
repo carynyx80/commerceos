@@ -5,6 +5,7 @@ import { createPublicClient, getAddress, http, verifyMessage, type Hex } from "v
 import { parseSiweMessage, validateSiweMessage } from "viem/siwe";
 import { z } from "zod";
 import { chainById } from "@commerce-os/blockchain";
+import { enabledChains, rpcUrlFor } from "@commerce-os/commerce";
 import { audit } from "@commerce-os/database";
 import { prisma } from "../../common/prisma";
 import { Auth, CSRF_COOKIE, CurrentUser, SESSION_COOKIE, hashToken, type AuthContext } from "../../common/auth";
@@ -35,7 +36,7 @@ export class AuthController {
     const allowedDomains = config.appOrigins.map((o) => new URL(o).host);
     const domainOk = allowedDomains.includes(fields.domain);
     if (!domainOk) throw badRequest("SIWE_DOMAIN", "Sign-in message was created for a different site.");
-    if (fields.chainId !== config.chainId) throw badRequest("SIWE_CHAIN", `Sign in on chain ${config.chainId}.`);
+    if (!fields.chainId || !enabledChains().includes(fields.chainId)) throw badRequest("SIWE_CHAIN", `Sign in on one of chains ${enabledChains().join(", ")}.`);
     if (!validateSiweMessage({ message: fields, time: new Date() })) throw badRequest("SIWE_EXPIRED", "Sign-in message expired.");
 
     // Consume the nonce atomically: a replayed signature finds it already used.
@@ -52,9 +53,9 @@ export class AuthController {
     } catch {
       valid = false;
     }
-    if (!valid && config.rpcUrl) {
-      // Smart-contract wallets (ERC-1271 / ERC-6492) need an on-chain check.
-      const client = createPublicClient({ chain: chainById(config.chainId), transport: http(config.rpcUrl) });
+    if (!valid) {
+      // Smart-contract wallets (ERC-1271 / ERC-6492) need an on-chain check on the chain they signed for.
+      const client = createPublicClient({ chain: chainById(fields.chainId), transport: http(rpcUrlFor(fields.chainId)) });
       valid = await client.verifyMessage({ address, message, signature: signature as Hex }).catch(() => false);
     }
     if (!valid) throw unauthorized("Signature does not match the wallet.");
@@ -77,7 +78,7 @@ export class AuthController {
         id: hashToken(token),
         userId: user.id,
         address: lower,
-        chainId: config.chainId,
+        chainId: fields.chainId,
         csrfToken,
         userAgent: req.headers["user-agent"]?.slice(0, 300),
         expiresAt: new Date(Date.now() + maxAge),
@@ -113,6 +114,7 @@ export class AuthController {
       role: user.role,
       displayName: user.displayName,
       chainId: config.chainId,
+      chains: enabledChains(),
       csrfToken: auth.csrfToken,
       merchant: user.merchant && {
         id: user.merchant.id,

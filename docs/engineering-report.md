@@ -14,10 +14,10 @@ Date: 2026-10-22 · Repository: local `commerce-os` (no remote configured) · Ne
 
 | Suite | Result |
 |---|---|
-| Foundry unit + fuzz (`CommerceEscrow`, `AgentPolicy`) | 40 passed (fuzz 512 runs each) |
+| Foundry unit + fuzz (`CommerceEscrow`, `AgentPolicy`, `BnbChain`) | 46 passed (fuzz 512 runs each) |
 | Foundry invariants (solvency, liabilities = open orders, conservation) | 3 passed (128 runs × 64 calls) |
-| `packages/shared` unit tests | 9 passed |
-| API end-to-end against the live local stack | **19 passed** |
+| `packages/shared` unit tests | 12 passed |
+| API end-to-end against the live local stack (two local chains) | **23 passed** |
 | `next build` production build | passed (19 routes) |
 | TypeScript (`tsc --noEmit`) for web, api, worker, agent-core | clean |
 
@@ -25,12 +25,15 @@ Critical journeys covered by the e2e suite: 1–2 SIWE sign-in and replay reject
 
 Journey 24 (desktop and mobile) was checked manually in the browser: no horizontal overflow at 375 px on the landing page and workspace; navigation, filters and workspace reorganise into a menu, a sheet and tabs.
 
+**BNB Chain (USDC + BNB)**, added 2026-10-22: same contracts on a second chain; `AgentPolicyModule` now reads the stablecoin's decimals (BNB Chain USDC has 18). Tested: 18-decimal USDC escrow with the exact 98/2 split, BNB escrow, agent limits valued correctly in 18-decimal USDC and in BNB via the feed, USDC and BNB checkouts end to end on a local BNB devnet, assets refused when the listing doesn't accept them, and a BNB Chain quote refused by the Robinhood escrow. A USDC checkout on BNB Chain was also completed in the browser (wallet switched networks automatically).
+
 ## 3. Verified against live infrastructure
 
 - Robinhood Chain **mainnet** read-only checks: chain id 4663, USDG name/symbol/decimals (6), supply, proxy implementation (see `docs/chain-verification.md`).
 - Everything else ran against a **local** Anvil devnet and an embedded PostgreSQL 17. In the browser preview: SIWE sign-in, USDG approve + escrow payment confirmed by the indexer, and a live offer → seller-agent counter.
 - **Live OpenAI (gpt-4.1-mini)**, 2026-10-22: the buyer agent searched real listings and reported price, stock and seller verification that matched the database; it flagged a demo listing and an unverified seller; it negotiated a field watch at $430 → $450 against the seller agent ($460 → held at $460) and did not accept above the user's $450 ceiling. Live testing found and fixed: tool schemas OpenAI rejected, a cents/dollars mix-up (the agent once offered $4.50), ids lost between turns (the agent guessed an id), a seller agent that raised its own counter, a worker loop that blocked the seller's reply during an agent turn, and a double-applied state transition under concurrent indexing. Known remaining quirk: the agent sometimes words a re-counter as "declined", and does not always mention demo listings.
-- **Not** deployed to Robinhood testnet or mainnet. **Not** deployed to Vercel. No GitHub remote was provided, so nothing was pushed.
+- BNB Chain **mainnet** read-only: chain id 56, USDC decimals (18) and proxy, Chainlink BNB/USD feed live (see `docs/chain-verification.md`).
+- **Not** deployed to Robinhood testnet or mainnet, or to BNB Chain testnet or mainnet. **Not** deployed to Vercel. No GitHub remote was provided, so nothing was pushed.
 
 ## 4. Requires external credentials or accounts
 
@@ -43,6 +46,9 @@ Journey 24 (desktop and mobile) was checked manually in the browser: no horizont
 All contracts (`CommerceEscrow`, `MerchantRegistry`, `FeeController`, `Treasury`, `DisputeResolver`, `AgentPolicyModule`, `AgentAccount`, `AgentAccountFactory`). `AgentAccount` is a custom minimal account rather than an audited ERC-4337 implementation, chosen because 4337 infrastructure on Robinhood Chain is unverified. Foundry lint warnings (timestamp use, event-after-call ordering) were reviewed but not formally triaged.
 
 ## 6. Not yet completed / known deviations
+
+- An agent's smart account lives on one chain; it pays autonomously only in that chain's two assets. Purchases in the other chain's assets go to the user for approval.
+- BSC testnet (97) and mainnet (56) deployments not done; `deployments.ts` imports only 31337, 31338, 46630 and 97.
 
 - **Redis** is not used; the queue is Postgres-backed (durable, transactional). Rate limiting is in-memory per API instance — add a shared store before running several API replicas.
 - **Object storage**: uploads go to local disk; production needs S3-compatible storage.

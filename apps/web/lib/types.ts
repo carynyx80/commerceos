@@ -1,4 +1,4 @@
-import type { OrderState } from "@commerce-os/shared";
+import type { OrderState, PaymentAsset } from "@commerce-os/shared";
 
 export interface StoreSummary {
   id: string;
@@ -18,7 +18,7 @@ export interface ProductCard {
   category: string;
   priceCents: number;
   images: string[];
-  acceptedAssets: ("USDG" | "ETH")[];
+  acceptedAssets: PaymentAsset[];
   negotiable: boolean;
   deliveryType: "PHYSICAL" | "DIGITAL";
   available: number;
@@ -55,7 +55,8 @@ export interface OrderView {
   unitCents: number;
   totalCents: number;
   feeBps: number;
-  asset: "USDG" | "ETH";
+  asset: PaymentAsset;
+  chainId: number;
   amount: string;
   buyerAddress: string;
   sellerAddress: string;

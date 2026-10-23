@@ -3,7 +3,8 @@ import { useQuery } from "@tanstack/react-query";
 import Link from "next/link";
 import { use, useState } from "react";
 import { erc20Abi, type Hex } from "viem";
-import { useAccount, usePublicClient, useReadContract, useWriteContract } from "wagmi";
+import { useAccount, useReadContract, useSwitchChain, useWriteContract } from "wagmi";
+import { getPublicClient } from "wagmi/actions";
 import { agentAccountAbi, agentAccountFactoryAbi, agentPolicyModuleAbi, explorerTx } from "@commerce-os/blockchain";
 import { formatUnits, formatUsd } from "@commerce-os/shared";
 import { Bot, Check, Lock } from "@/components/icons";
@@ -12,19 +13,21 @@ import { SignInGate } from "@/components/sign-in-gate";
 import { useToast } from "@/components/toast";
 import { api } from "@/lib/api";
 import { shortAddr, timeAgo } from "@/lib/format";
-import { CHAIN_ID } from "@/lib/wagmi";
+import { CHAIN_ID, wagmiConfig } from "@/lib/wagmi";
+import { chainById } from "@commerce-os/blockchain";
 import { PolicyFields, StatusChip, policyPayload, type AgentRow, type PolicyForm } from "../shared";
 
 interface Detail extends AgentRow {
   tasks: { id: string; status: string; step: string | null; createdAt: string; toolExecutions: { tool: string; error: string | null; durationMs: number | null }[] }[];
   activity: { id: string; action: string; actorType: string; createdAt: string; data: any }[];
   negotiations: { id: string; status: string; agreedCents: number | null; product: { title: string }; offers: { from: string; priceCents: number; status: string }[] }[];
-  orders: { id: string; state: any; totalCents: number; asset: string; product: { title: string }; payments: { txHash: string; status: string }[] }[];
+  orders: { id: string; state: any; totalCents: number; asset: string; chainId: number; product: { title: string }; payments: { txHash: string; status: string }[] }[];
   policyCheck: { spentInWindowCents: number; remainingCents: number; allowed: boolean; reasons: string[] } | null;
   onchain: any;
 }
 
-interface Cfg { autonomousPaymentsEnabled: boolean; executor: Hex | null; accountFactory: Hex | null; policyModule: Hex | null; usdg: Hex | null; aiConfigured: boolean }
+interface NetCfg { chainId: number; network: "robinhood" | "bnb"; deployed: boolean; accountFactory: Hex | null; policyModule: Hex | null; stable: Hex | null; stableSymbol: string | null; stableDecimals: number | null; nativeSymbol: string | null }
+interface Cfg { autonomousPaymentsEnabled: boolean; executor: Hex | null; networks: NetCfg[]; aiConfigured: boolean }
 
 export default function AgentPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
@@ -122,7 +125,7 @@ function AgentView({ id }: { id: string }) {
                   <li key={o.id} className="flex items-center justify-between gap-3">
                     <Link href={`/orders/${o.id}`} className="truncate hover:text-champagne">{o.product.title}</Link>
                     <span className="flex shrink-0 items-center gap-2"><span className="num">{formatUsd(o.totalCents)}</span><OrderStateChip state={o.state} />
-                      {o.payments[0] && (explorerTx(CHAIN_ID, o.payments[0].txHash) ? <a className="num text-[11px] text-sage" target="_blank" rel="noreferrer" href={explorerTx(CHAIN_ID, o.payments[0].txHash)!}>tx</a> : <span className="num text-[11px] text-dim" title={o.payments[0].txHash}>{shortAddr(o.payments[0].txHash)}</span>)}
+                      {o.payments[0] && (explorerTx(o.chainId, o.payments[0].txHash) ? <a className="num text-[11px] text-sage" target="_blank" rel="noreferrer" href={explorerTx(o.chainId, o.payments[0].txHash)!}>tx</a> : <span className="num text-[11px] text-dim" title={o.payments[0].txHash}>{shortAddr(o.payments[0].txHash)}</span>)}
                     </span>
                   </li>
                 ))}
@@ -195,18 +198,26 @@ function EditPolicy({ a, onSaved }: { a: Detail; onSaved: () => void }) {
 /** Deploys and configures the user's AgentAccount from their own wallet. Commerce OS never holds the owner key. */
 function SmartAccount({ a, cfg, refetch }: { a: Detail; cfg: Cfg; refetch: () => void }) {
   const toast = useToast();
-  const { address } = useAccount();
-  const client = usePublicClient();
+  const { address, chainId: walletChain } = useAccount();
+  const { switchChainAsync } = useSwitchChain();
   const { writeContractAsync } = useWriteContract();
   const [busy, setBusy] = useState<string | null>(null);
   const [fund, setFund] = useState("50");
-  const predicted = useReadContract({ address: cfg.accountFactory ?? undefined, abi: agentAccountFactoryAbi, functionName: "accountAddress", args: address ? [address, 0n] : undefined, query: { enabled: !!cfg.accountFactory && !!address } });
+  // The account lives on one network; once linked it stays there.
+  const deployedNets = cfg.networks.filter((n) => n.deployed);
+  const [pick, setPick] = useState<number | null>(null);
+  const chainId = a.accountChainId ?? pick ?? deployedNets[0]?.chainId ?? CHAIN_ID;
+  const net = cfg.networks.find((n) => n.chainId === chainId);
+  const client = getPublicClient(wagmiConfig, { chainId });
+  const predicted = useReadContract({ address: net?.accountFactory ?? undefined, abi: agentAccountFactoryAbi, functionName: "accountAddress", args: address ? [address, 0n] : undefined, chainId, query: { enabled: !!net?.accountFactory && !!address } });
   const acct = (a.accountAddress ?? predicted.data) as Hex | undefined;
-  const code = useQuery({ queryKey: ["code", acct], enabled: !!acct, queryFn: async () => ((await client!.getCode({ address: acct! })) ?? "0x").length > 2, refetchInterval: 5000 });
-  const key = useReadContract({ address: acct, abi: agentAccountAbi, functionName: "agentKey", query: { enabled: !!acct && !!code.data, refetchInterval: 5000 } });
-  const bal = useReadContract({ address: cfg.usdg ?? undefined, abi: erc20Abi, functionName: "balanceOf", args: acct ? [acct] : undefined, query: { enabled: !!acct && !!code.data && !!cfg.usdg, refetchInterval: 5000 } });
+  const code = useQuery({ queryKey: ["code", chainId, acct], enabled: !!acct, queryFn: async () => ((await client!.getCode({ address: acct! })) ?? "0x").length > 2, refetchInterval: 5000 });
+  const key = useReadContract({ address: acct, abi: agentAccountAbi, functionName: "agentKey", chainId, query: { enabled: !!acct && !!code.data, refetchInterval: 5000 } });
+  const bal = useReadContract({ address: net?.stable ?? undefined, abi: erc20Abi, functionName: "balanceOf", args: acct ? [acct] : undefined, chainId, query: { enabled: !!acct && !!code.data && !!net?.stable, refetchInterval: 5000 } });
+  const stableSym = net?.stableSymbol ?? "USDG";
+  const stableDec = net?.stableDecimals ?? 6;
 
-  if (!cfg.accountFactory || !cfg.executor) {
+  if (!net?.accountFactory || !cfg.executor) {
     return (
       <section className="surface rounded-2xl p-5">
         <p className="eyebrow mb-2">Smart account</p>
@@ -218,6 +229,7 @@ function SmartAccount({ a, cfg, refetch }: { a: Detail; cfg: Cfg; refetch: () =>
   async function tx(label: string, fn: () => Promise<Hex>) {
     setBusy(label);
     try {
+      if (walletChain !== chainId) await switchChainAsync({ chainId });
       const h = await fn();
       const r = await client!.waitForTransactionReceipt({ hash: h });
       if (r.status !== "success") throw new Error("reverted");
@@ -243,7 +255,7 @@ function SmartAccount({ a, cfg, refetch }: { a: Detail; cfg: Cfg; refetch: () =>
     const stores = await api<{ items: { id: string; payoutAddress: Hex }[] }>("/stores/trending");
     await tx("Policy sync", () =>
       writeContractAsync({
-        address: cfg.policyModule!,
+        address: net!.policyModule!,
         abi: agentPolicyModuleAbi,
         functionName: "setPolicy",
         args: [acct!, {
@@ -251,24 +263,26 @@ function SmartAccount({ a, cfg, refetch }: { a: Detail; cfg: Cfg; refetch: () =>
           rollingLimitUsd: BigInt(p.rollingLimitCents) * 10_000n,
           window: p.rollingWindowDays * 86400,
           expiresAt: Math.floor(new Date(p.expiresAt).getTime() / 1000),
-          allowedAssets: (p.allowedAssets.includes("USDG") ? 1 : 0) | (p.allowedAssets.includes("ETH") ? 2 : 0),
+          // Bit 1 = this chain's stablecoin, bit 2 = its native coin.
+          allowedAssets: (p.allowedAssets.includes(stableSym as never) ? 1 : 0) | (p.allowedAssets.includes((net!.nativeSymbol ?? "ETH") as never) ? 2 : 0),
           merchantAllowlist: p.approvedStoreIds.length > 0,
           revoked: false,
           nonce: 0n,
         }],
+        chainId,
       }),
     );
     for (const sid of p.approvedStoreIds) {
       const s = stores.items.find((x) => x.id === sid);
-      if (s) await tx(`Approve seller ${shortAddr(s.payoutAddress)}`, () => writeContractAsync({ address: cfg.policyModule!, abi: agentPolicyModuleAbi, functionName: "setMerchant", args: [acct!, s.payoutAddress, true] }));
+      if (s) await tx(`Approve seller ${shortAddr(s.payoutAddress)}`, () => writeContractAsync({ address: net!.policyModule!, abi: agentPolicyModuleAbi, functionName: "setMerchant", args: [acct!, s.payoutAddress, true], chainId }));
     }
   }
 
   const steps: { label: string; done: boolean; action?: React.ReactNode }[] = [
-    { label: "Deploy agent account", done: deployed, action: <button className="btn btn-secondary btn-sm" disabled={!!busy} onClick={() => tx("Deploy", () => writeContractAsync({ address: cfg.accountFactory!, abi: agentAccountFactoryAbi, functionName: "createAccount", args: [0n] }))}>Deploy</button> },
-    { label: "Authorize the Commerce OS agent key (pay escrow quotes only)", done: keySet, action: <button className="btn btn-secondary btn-sm" disabled={!!busy || !deployed} onClick={() => tx("Agent key", () => writeContractAsync({ address: acct!, abi: agentAccountAbi, functionName: "setAgentKey", args: [cfg.executor!] }))}>Authorize</button> },
+    { label: "Deploy agent account", done: deployed, action: <button className="btn btn-secondary btn-sm" disabled={!!busy} onClick={() => tx("Deploy", () => writeContractAsync({ address: net!.accountFactory!, abi: agentAccountFactoryAbi, functionName: "createAccount", args: [0n], chainId }))}>Deploy</button> },
+    { label: "Authorize the Commerce OS agent key (pay escrow quotes only)", done: keySet, action: <button className="btn btn-secondary btn-sm" disabled={!!busy || !deployed} onClick={() => tx("Agent key", () => writeContractAsync({ address: acct!, abi: agentAccountAbi, functionName: "setAgentKey", args: [cfg.executor!], chainId }))}>Authorize</button> },
     { label: "Write spending policy on-chain", done: !!onchainOk, action: <button className="btn btn-secondary btn-sm" disabled={!!busy || !deployed} onClick={syncPolicy}>{a.onchain && !a.onchain.error ? "Re-sync" : "Write policy"}</button> },
-    { label: "Link account to this agent", done: linked, action: <button className="btn btn-secondary btn-sm" disabled={!!busy || !keySet} onClick={() => api(`/agents/${a.id}/account`, { json: { accountAddress: acct } }).then(() => { toast({ title: "Account linked", tone: "ok" }); refetch(); }).catch((e) => toast({ title: "Link failed", body: e.message, tone: "error" }))}>Link</button> },
+    { label: "Link account to this agent", done: linked, action: <button className="btn btn-secondary btn-sm" disabled={!!busy || !keySet} onClick={() => api(`/agents/${a.id}/account`, { json: { accountAddress: acct, chainId } }).then(() => { toast({ title: "Account linked", tone: "ok" }); refetch(); }).catch((e) => toast({ title: "Link failed", body: e.message, tone: "error" }))}>Link</button> },
   ];
 
   return (
@@ -277,7 +291,19 @@ function SmartAccount({ a, cfg, refetch }: { a: Detail; cfg: Cfg; refetch: () =>
         <p className="eyebrow">Smart account · autonomous payments</p>
         {acct && <span className="num text-[12px] text-mist">{shortAddr(acct)}</span>}
       </div>
-      <p className="mt-2 text-[12.5px] text-dim">Owned by your wallet. The agent key can only pay server-signed escrow quotes after the AgentPolicyModule contract checks every limit. Unaudited contracts — keep balances small.</p>
+      <div className="mt-3 flex flex-wrap items-center gap-2 text-[12.5px]">
+        <span className="text-mist">Network</span>
+        {a.accountChainId ? (
+          <span className="chip">{chainById(chainId).name} · {stableSym} + {net!.nativeSymbol}</span>
+        ) : (
+          deployedNets.map((n) => (
+            <button key={n.chainId} className={`chip !h-7 ${n.chainId === chainId ? "!border-champagne/60 !text-champagne" : ""}`} onClick={() => setPick(n.chainId)}>
+              {chainById(n.chainId).name} · {n.stableSymbol} + {n.nativeSymbol}
+            </button>
+          ))
+        )}
+      </div>
+      <p className="mt-2 text-[12.5px] text-dim">Autonomous payments use only this network's assets; purchases in other assets ask you to pay. Owned by your wallet. The agent key can only pay server-signed escrow quotes after the AgentPolicyModule contract checks every limit. Unaudited contracts — keep balances small.</p>
       <ol className="mt-5 space-y-3">
         {steps.map((s, i) => (
           <li key={s.label} className="flex items-center justify-between gap-3 text-[13.5px]">
@@ -292,18 +318,18 @@ function SmartAccount({ a, cfg, refetch }: { a: Detail; cfg: Cfg; refetch: () =>
       {deployed && (
         <div className="mt-5 border-t hairline pt-5">
           <div className="flex flex-wrap items-center justify-between gap-3 text-[13px]">
-            <span>Budget balance: <span className="num">{bal.data !== undefined ? formatUnits(bal.data, 6, 2) : "…"} USDG</span></span>
+            <span>Budget balance: <span className="num">{bal.data !== undefined ? formatUnits(bal.data, stableDec, 2) : "…"} {stableSym}</span></span>
             <div className="flex items-center gap-2">
               <input className="field num !h-8 !w-24 text-[13px]" value={fund} onChange={(e) => setFund(e.target.value.replace(/[^0-9.]/g, ""))} aria-label="USDG amount" />
-              <button className="btn btn-secondary btn-sm" disabled={!!busy || !cfg.usdg} onClick={() => tx("Fund USDG", () => writeContractAsync({ address: cfg.usdg!, abi: erc20Abi, functionName: "transfer", args: [acct!, BigInt(Math.round(Number(fund) * 1e6))] }))}>Add USDG</button>
-              <button className="btn btn-ghost btn-sm" disabled={!!busy || !(bal.data && bal.data > 0n)} onClick={() => tx("Withdraw", () => writeContractAsync({ address: acct!, abi: agentAccountAbi, functionName: "execute", args: [cfg.usdg!, 0n, encodeTransfer(address!, bal.data!)] }))}>Withdraw all</button>
+              <button className="btn btn-secondary btn-sm" disabled={!!busy || !net!.stable} onClick={() => tx(`Fund ${stableSym}`, () => writeContractAsync({ address: net!.stable!, abi: erc20Abi, functionName: "transfer", args: [acct!, BigInt(Math.round(Number(fund) * 100)) * 10n ** BigInt(stableDec - 2)], chainId }))}>Add {stableSym}</button>
+              <button className="btn btn-ghost btn-sm" disabled={!!busy || !(bal.data && bal.data > 0n)} onClick={() => tx("Withdraw", () => writeContractAsync({ address: acct!, abi: agentAccountAbi, functionName: "execute", args: [net!.stable!, 0n, encodeTransfer(address!, bal.data!)], chainId }))}>Withdraw all</button>
             </div>
           </div>
           {a.onchain && !a.onchain.error && (
             <p className="num mt-3 text-[11.5px] text-dim">on-chain: max ${Number(a.onchain.maxPerOrderUsd) / 1e6}/order · ${Number(a.onchain.rollingLimitUsd) / 1e6}/{a.onchain.window / 86400}d · spent ${Number(a.onchain.spentInWindowUsd) / 1e6} · nonce {a.onchain.nonce}{a.onchain.revoked ? " · REVOKED" : ""}</p>
           )}
           {a.onchain && !a.onchain.error && !a.onchain.revoked && (
-            <button className="btn btn-ghost btn-sm mt-3 !text-danger" disabled={!!busy} onClick={() => tx("On-chain revoke", () => writeContractAsync({ address: cfg.policyModule!, abi: agentPolicyModuleAbi, functionName: "revoke", args: [acct!] }))}><Lock size={13} /> Revoke on-chain</button>
+            <button className="btn btn-ghost btn-sm mt-3 !text-danger" disabled={!!busy} onClick={() => tx("On-chain revoke", () => writeContractAsync({ address: net!.policyModule!, abi: agentPolicyModuleAbi, functionName: "revoke", args: [acct!], chainId }))}><Lock size={13} /> Revoke on-chain</button>
           )}
           {!cfg.autonomousPaymentsEnabled && <p className="mt-3 text-[12px] text-warn">Autonomous execution is switched off on this server; the agent will still ask you to pay.</p>}
         </div>

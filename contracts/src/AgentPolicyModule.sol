@@ -3,6 +3,7 @@ pragma solidity ^0.8.28;
 
 import {Ownable, Ownable2Step} from "@openzeppelin/contracts/access/Ownable2Step.sol";
 import {IPriceFeed} from "./interfaces/IPriceFeed.sol";
+import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 
 interface IOwned {
     function owner() external view returns (address);
@@ -13,13 +14,15 @@ interface IOwned {
 ///         The AI never approves a payment: it can only ask the account to pay a quote, and
 ///         the account asks this module, which checks every limit on-chain.
 ///
-///         Values are accounted in USD with 6 decimals. ETH is valued with a Chainlink-style
-///         feed that must be fresh and positive. USDG uses its own feed when configured; with no
-///         feed it is counted 1:1, which is why the USDG feed should be set before mainnet.
+///         Values are accounted in USD with 6 decimals. The native coin (ETH on Robinhood Chain,
+///         BNB on BNB Chain) is valued with a Chainlink-style feed that must be fresh and positive.
+///         The stablecoin (USDG or USDC) uses its own feed when configured; with no feed it is
+///         counted 1:1, which is why the stable feed should be set before mainnet. Token decimals
+///         are read at deployment (USDG has 6, BNB Chain USDC has 18).
 /// @dev    UNAUDITED.
 contract AgentPolicyModule is Ownable2Step {
-    uint8 public constant ASSET_USDG = 1;
-    uint8 public constant ASSET_ETH = 2;
+    uint8 public constant ASSET_STABLE = 1;
+    uint8 public constant ASSET_NATIVE = 2;
     uint256 public constant MAX_TRACKED_SPENDS = 64;
 
     struct Policy {
@@ -38,9 +41,10 @@ contract AgentPolicyModule is Ownable2Step {
         uint128 usd;
     }
 
-    address public immutable usdg;
-    IPriceFeed public ethUsdFeed;
-    IPriceFeed public usdgUsdFeed; // optional
+    address public immutable stableToken;
+    uint8 public immutable stableDecimals;
+    IPriceFeed public nativeUsdFeed;
+    IPriceFeed public stableUsdFeed; // optional
     uint256 public maxFeedAge = 1 hours;
 
     mapping(address account => Policy) public policies;
@@ -51,7 +55,7 @@ contract AgentPolicyModule is Ownable2Step {
     event MerchantAllowed(address indexed account, address indexed seller, bool allowed);
     event PolicyRevoked(address indexed account);
     event SpendAuthorized(address indexed account, address indexed seller, address token, uint256 amount, uint256 usd, uint64 nonce);
-    event FeedsSet(address ethUsdFeed, address usdgUsdFeed, uint256 maxFeedAge);
+    event FeedsSet(address nativeUsdFeed, address stableUsdFeed, uint256 maxFeedAge);
 
     error NotAccountOwner();
     error NotAccount();
@@ -66,9 +70,10 @@ contract AgentPolicyModule is Ownable2Step {
     error TooManySpends();
     error BadPolicy();
 
-    constructor(address owner_, address usdg_, IPriceFeed ethUsdFeed_) Ownable(owner_) {
-        usdg = usdg_;
-        ethUsdFeed = ethUsdFeed_;
+    constructor(address owner_, address stableToken_, IPriceFeed nativeUsdFeed_) Ownable(owner_) {
+        stableToken = stableToken_;
+        stableDecimals = IERC20Metadata(stableToken_).decimals();
+        nativeUsdFeed = nativeUsdFeed_;
     }
 
     modifier onlyAccountOwner(address account) {
@@ -122,7 +127,7 @@ contract AgentPolicyModule is Ownable2Step {
         if (block.timestamp >= p.expiresAt) revert Expired();
         if (p.nonce != expectedNonce) revert StaleNonce(expectedNonce, p.nonce);
 
-        uint8 bit = token == address(0) ? ASSET_ETH : (token == usdg ? ASSET_USDG : 0);
+        uint8 bit = token == address(0) ? ASSET_NATIVE : (token == stableToken ? ASSET_STABLE : 0);
         if (bit == 0 || p.allowedAssets & bit == 0) revert AssetNotAllowed();
         if (p.merchantAllowlist && !allowedMerchant[account][seller]) revert MerchantNotAllowed();
 
@@ -141,14 +146,16 @@ contract AgentPolicyModule is Ownable2Step {
     /// @notice USD value (6 decimals) of `amount` of `token`, rounded up so limits are conservative.
     function valueUsd(address token, uint256 amount) public view returns (uint256) {
         if (token == address(0)) {
-            (uint256 px, uint8 dec) = _price(ethUsdFeed);
+            (uint256 px, uint8 dec) = _price(nativeUsdFeed);
             // amount (18 dec) * px (dec) → 6 dec
             return _ceilDiv(amount * px, 10 ** (18 + dec - 6));
         }
-        if (token == usdg) {
-            if (address(usdgUsdFeed) == address(0)) return amount; // USDG has 6 decimals
-            (uint256 px, uint8 dec) = _price(usdgUsdFeed);
-            return _ceilDiv(amount * px, 10 ** dec);
+        if (token == stableToken) {
+            if (address(stableUsdFeed) == address(0)) return _toUsd6(amount, stableDecimals);
+            (uint256 px, uint8 dec) = _price(stableUsdFeed);
+            // amount (stableDecimals) * px (dec) → 6 dec
+            uint256 d = uint256(stableDecimals) + dec;
+            return d >= 6 ? _ceilDiv(amount * px, 10 ** (d - 6)) : amount * px * 10 ** (6 - d);
         }
         revert AssetNotAllowed();
     }
@@ -182,17 +189,24 @@ contract AgentPolicyModule is Ownable2Step {
         return (uint256(answer), feed.decimals());
     }
 
+    /// @dev Rescale a 1:1 stable amount to 6 decimals, rounding up so limits stay conservative.
+    function _toUsd6(uint256 amount, uint8 decimals) internal pure returns (uint256) {
+        if (decimals == 6) return amount;
+        if (decimals > 6) return _ceilDiv(amount, 10 ** (decimals - 6));
+        return amount * 10 ** (6 - decimals);
+    }
+
     function _ceilDiv(uint256 a, uint256 b) internal pure returns (uint256) {
         return a == 0 ? 0 : (a - 1) / b + 1;
     }
 
     // ------------------------------------------------------- protocol admin
 
-    function setFeeds(IPriceFeed eth, IPriceFeed usdgFeed, uint256 maxAge) external onlyOwner {
+    function setFeeds(IPriceFeed native, IPriceFeed stableFeed, uint256 maxAge) external onlyOwner {
         if (maxAge == 0 || maxAge > 1 days) revert BadPrice();
-        ethUsdFeed = eth;
-        usdgUsdFeed = usdgFeed;
+        nativeUsdFeed = native;
+        stableUsdFeed = stableFeed;
         maxFeedAge = maxAge;
-        emit FeedsSet(address(eth), address(usdgFeed), maxAge);
+        emit FeedsSet(address(native), address(stableFeed), maxAge);
     }
 }

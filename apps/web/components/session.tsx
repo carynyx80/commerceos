@@ -5,7 +5,7 @@ import { createSiweMessage } from "viem/siwe";
 import { useAccount, useDisconnect, useSignMessage } from "wagmi";
 import { api, ApiError } from "@/lib/api";
 import type { Me } from "@/lib/types";
-import { CHAIN_ID } from "@/lib/wagmi";
+import { CHAIN_ID, ENABLED_CHAIN_IDS } from "@/lib/wagmi";
 
 interface SessionCtx {
   me: Me | null;
@@ -25,7 +25,7 @@ export function useSession() {
 
 export function SessionProvider({ children }: { children: ReactNode }) {
   const qc = useQueryClient();
-  const { address, isConnected } = useAccount();
+  const { address, isConnected, chainId: walletChain } = useAccount();
   const { signMessageAsync } = useSignMessage();
   const { disconnect } = useDisconnect();
   const [signingIn, setSigningIn] = useState(false);
@@ -52,7 +52,8 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       const { nonce } = await api<{ nonce: string }>("/auth/nonce", { method: "POST", json: {} });
       const message = createSiweMessage({
         address,
-        chainId: CHAIN_ID,
+        // Sign on whichever enabled chain the wallet is on; the session works across both.
+        chainId: walletChain && ENABLED_CHAIN_IDS.includes(walletChain) ? walletChain : CHAIN_ID,
         domain: window.location.host,
         uri: window.location.origin,
         nonce,
@@ -67,7 +68,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     } finally {
       setSigningIn(false);
     }
-  }, [address, signMessageAsync, qc]);
+  }, [address, walletChain, signMessageAsync, qc]);
 
   const signOut = useCallback(async () => {
     try {

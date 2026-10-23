@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { claimJobs, completeJob, failJob, prisma } from "@commerce-os/database";
-import { expireUnpaidOrders } from "@commerce-os/commerce";
+import { enabledChains, expireUnpaidOrders } from "@commerce-os/commerce";
 import { indexOnce } from "./indexer";
 import { handlers, refreshDevPriceFeed } from "./jobs";
 import { agentHandlers } from "./agents";
@@ -51,12 +51,12 @@ async function runJobs() {
 }
 
 async function main() {
-  log(`starting (chain ${process.env.CHAIN_ID})`);
+  log(`starting (chains ${enabledChains().join(", ")})`);
   let lastExpire = 0;
   while (!stopping) {
-    await tick("indexer", () => indexOnce(log));
+    for (const chainId of enabledChains()) await tick(`indexer:${chainId}`, () => indexOnce(chainId, log));
     await tick("jobs", runJobs);
-    if (Date.now() - lastExpire > 60_000) {
+    if (Date.now() - lastExpire > 30_000) {
       lastExpire = Date.now();
       await tick("expiry", () => expireUnpaidOrders());
       await tick("devfeed", () => refreshDevPriceFeed(log));

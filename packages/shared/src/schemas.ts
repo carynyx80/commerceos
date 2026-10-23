@@ -6,7 +6,7 @@ export const slug = z
   .min(3)
   .max(48)
   .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/, "lowercase letters, numbers and dashes");
-export const asset = z.enum(["USDG", "ETH"]);
+export const asset = z.enum(["USDG", "ETH", "USDC", "BNB"]);
 /** https image URL, or a file uploaded to Commerce OS media storage. */
 export const imageRef = z
   .string()
@@ -34,7 +34,7 @@ export const productSchema = z.object({
   inventory: z.number().int().min(0).max(1_000_000),
   images: z.array(imageRef).max(8).default([]),
   specs: z.record(z.string().max(60), z.string().max(200)).default({}),
-  acceptedAssets: z.array(asset).min(1).default(["USDG", "ETH"]),
+  acceptedAssets: z.array(asset).min(1).default(["USDG", "ETH", "USDC", "BNB"]),
   deliveryType: z.enum(["PHYSICAL", "DIGITAL"]).default("PHYSICAL"),
   shippingInfo: z.string().max(500).default(""),
   negotiable: z.boolean().default(false),

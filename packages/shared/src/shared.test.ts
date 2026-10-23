@@ -1,11 +1,24 @@
 import { describe, expect, it } from "vitest";
-import { splitFee, centsToUsdg, centsToWei, canTransition, sellerDecision } from "./index";
+import { splitFee, centsToStable, centsToUsdg, centsToWei, canTransition, sellerDecision, assetsOn } from "./index";
 
 describe("money", () => {
   it("splits a 100 USDG order into 98 / 2", () => {
     const { fee, seller } = splitFee(centsToUsdg(10_000));
     expect(fee).toBe(2_000_000n);
     expect(seller).toBe(98_000_000n);
+  });
+  it("scales stablecoins by their own decimals", () => {
+    expect(centsToStable(10_000, 6)).toBe(100_000_000n); // 100 USDG
+    expect(centsToStable(10_000, 18)).toBe(100n * 10n ** 18n); // 100 BNB Chain USDC
+    expect(splitFee(centsToStable(10_000, 18)).fee).toBe(2n * 10n ** 18n);
+  });
+  it("maps assets to networks", () => {
+    expect(assetsOn("robinhood")).toEqual(["USDG", "ETH"]);
+    expect(assetsOn("bnb")).toEqual(["USDC", "BNB"]);
+  });
+  it("prices BNB like ETH (18 decimals, 8-decimal feed)", () => {
+    // $100 at $729.05 = 0.137164… BNB, rounded up
+    expect(centsToWei(10_000, 72_905_000_000n)).toBe(137164803511418970n);
   });
   it("rounds ETH conversion up", () => {
     // $100 at $2,500.00000000/ETH = 0.04 ETH

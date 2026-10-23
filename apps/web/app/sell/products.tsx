@@ -2,7 +2,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { AnimatePresence, motion } from "motion/react";
 import { useState } from "react";
-import { formatUsd } from "@commerce-os/shared";
+import { NETWORK_LABEL, assetsOn, formatUsd, type PaymentAsset } from "@commerce-os/shared";
 import { Close, Plus } from "@/components/icons";
 import { ImageUpload } from "@/components/image-upload";
 import { ProductImage } from "@/components/product-image";
@@ -19,7 +19,7 @@ interface Row {
   images: string[];
   status: string;
   negotiable: boolean;
-  acceptedAssets: ("USDG" | "ETH")[];
+  acceptedAssets: PaymentAsset[];
   deliveryType: "PHYSICAL" | "DIGITAL";
   description: string;
   shippingInfo: string;
@@ -69,8 +69,7 @@ function ProductSheet({ store, row, onClose }: { store: MyStore; row: Row | null
     shippingInfo: row?.shippingInfo ?? "",
     images: row?.images ?? [],
     imageUrl: "",
-    usdg: row ? row.acceptedAssets.includes("USDG") : true,
-    eth: row ? row.acceptedAssets.includes("ETH") : true,
+    assets: (row?.acceptedAssets ?? ["USDG", "ETH", "USDC", "BNB"]) as PaymentAsset[],
     digital: row?.deliveryType === "DIGITAL",
     negotiable: row?.negotiable ?? false,
     status: row?.status ?? "ACTIVE",
@@ -90,7 +89,7 @@ function ProductSheet({ store, row, onClose }: { store: MyStore; row: Row | null
         description: f.description,
         shippingInfo: f.shippingInfo,
         images: f.images,
-        acceptedAssets: [f.usdg && "USDG", f.eth && "ETH"].filter(Boolean),
+        acceptedAssets: f.assets,
         deliveryType: f.digital ? "DIGITAL" : "PHYSICAL",
         negotiable: f.negotiable,
         status: f.status,
@@ -142,8 +141,14 @@ function ProductSheet({ store, row, onClose }: { store: MyStore; row: Row | null
           <Field label="Specifications (one per line, Key: Value)"><textarea className="field num text-[13px]" rows={3} value={f.specs} onChange={set("specs")} /></Field>
           <Field label="Shipping or delivery details"><input className="field" value={f.shippingInfo} onChange={set("shippingInfo")} /></Field>
           <div className="flex flex-wrap gap-4 text-[13.5px]">
-            <Check label="Accept USDG" on={f.usdg} toggle={() => setF((x) => ({ ...x, usdg: !x.usdg }))} />
-            <Check label="Accept ETH" on={f.eth} toggle={() => setF((x) => ({ ...x, eth: !x.eth }))} />
+            {(["robinhood", "bnb"] as const).map((n) => (
+              <div key={n} className="flex w-full flex-wrap gap-4">
+                <span className="w-full text-[11px] text-dim">{NETWORK_LABEL[n]}</span>
+                {assetsOn(n).map((a) => (
+                  <Check key={a} label={`Accept ${a}`} on={f.assets.includes(a)} toggle={() => setF((x) => ({ ...x, assets: x.assets.includes(a) ? x.assets.filter((y) => y !== a) : [...x.assets, a] }))} />
+                ))}
+              </div>
+            ))}
             <Check label="Digital delivery" on={f.digital} toggle={() => setF((x) => ({ ...x, digital: !x.digital }))} />
           </div>
           <div className="rounded-2xl border hairline p-4">

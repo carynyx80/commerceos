@@ -1,8 +1,8 @@
 import { getAddress, type Address, type Hex } from "viem";
 import { FLAGS, audit, flag, prisma, type PaymentAssetKind } from "@commerce-os/database";
 import { ETH_TOKEN, escrowDomain, onchainOrderId, quoteTypes, termsHash, type EscrowQuote } from "@commerce-os/blockchain";
-import { centsToUsdg, centsToWei } from "@commerce-os/shared";
-import { chainConfig, currentFeeBps, deployment, ethUsdPrice8, merchantActiveOnChain, quoteSigner } from "./chain";
+import { ASSETS, centsToStable, centsToWei } from "@commerce-os/shared";
+import { chainIdForAsset, currentFeeBps, deployment, merchantActiveOnChain, nativeUsdPrice8, quoteSigner } from "./chain";
 import { CommerceError } from "./errors";
 
 export const QUOTE_TTL_SECONDS = Number(process.env.QUOTE_TTL_SECONDS ?? 15 * 60);
@@ -29,6 +29,13 @@ export interface QuoteResult {
   unitCents: number;
   feeBps: number;
   asset: PaymentAssetKind;
+  /** The chain's stablecoin (USDG or USDC) and its decimals. */
+  stable: Address;
+  stableDecimals: number;
+  nativeSymbol: string;
+  /** Native/USD price used for ETH or BNB quotes (8 decimals). */
+  nativeUsdPrice8: string | null;
+  /** @deprecated aliases */
   usdg: Address;
   ethUsdPrice8: string | null;
 }
@@ -40,7 +47,8 @@ export interface QuoteResult {
  */
 export async function createCheckoutQuote(req: QuoteRequest): Promise<QuoteResult> {
   if (await flag(prisma, FLAGS.checkoutPaused)) throw new CommerceError(503, "CHECKOUT_PAUSED", "Checkout is temporarily paused by the operators. No new payments are being accepted.");
-  const d = deployment();
+  const chainId = chainIdForAsset(req.asset);
+  const d = deployment(chainId);
   const signer = quoteSigner();
   const payer = getAddress(req.payerAddress);
 
@@ -65,22 +73,23 @@ export async function createCheckoutQuote(req: QuoteRequest): Promise<QuoteResul
   }
   const totalCents = unitCents * req.quantity;
 
-  if (!(await merchantActiveOnChain(seller))) {
-    throw new CommerceError(409, "MERCHANT_NOT_REGISTERED", "This seller's payout wallet is not yet active in the on-chain merchant registry.");
+  if (!(await merchantActiveOnChain(seller, chainId))) {
+    throw new CommerceError(409, "MERCHANT_NOT_REGISTERED", `This seller's payout wallet is not yet active in the merchant registry on chain ${chainId}.`);
   }
 
+  // Stablecoins use the deployment's real decimals (USDG 6, BNB Chain USDC 18); natives use the chain's feed.
   let amount: bigint;
   let price8: bigint | null = null;
   let token: Address;
-  if (req.asset === "USDG") {
-    amount = centsToUsdg(totalCents);
-    token = d.usdg;
+  if (ASSETS[req.asset].kind === "stable") {
+    amount = centsToStable(totalCents, d.stableDecimals);
+    token = d.stable;
   } else {
-    price8 = await ethUsdPrice8();
+    price8 = await nativeUsdPrice8(chainId);
     amount = centsToWei(totalCents, price8);
     token = ETH_TOKEN;
   }
-  const feeBps = await currentFeeBps();
+  const feeBps = await currentFeeBps(chainId);
   const deadline = BigInt(Math.floor(Date.now() / 1000) + QUOTE_TTL_SECONDS);
 
   // Reserve stock and create the order atomically. A conditional update prevents overselling.
@@ -114,6 +123,7 @@ export async function createCheckoutQuote(req: QuoteRequest): Promise<QuoteResul
         unitCents,
         totalCents,
         asset: req.asset,
+        chainId,
         amount: amount.toString(),
         ethUsdPrice8: price8?.toString(),
         signature: "pending",
@@ -134,6 +144,7 @@ export async function createCheckoutQuote(req: QuoteRequest): Promise<QuoteResul
         totalCents,
         feeBps,
         asset: req.asset,
+        chainId,
         amount: amount.toString(),
         sellerAddress: seller.toLowerCase(),
         state: "AWAITING_PAYMENT",
@@ -154,24 +165,28 @@ export async function createCheckoutQuote(req: QuoteRequest): Promise<QuoteResul
     deadline,
     termsHash: termsHash({ orderId: order.o.id, productId: product.id, storeId: product.storeId, quantity: req.quantity, unitCents, totalCents, asset: req.asset, negotiationId }),
   };
-  const signature = await signer.signTypedData({ domain: escrowDomain(chainConfig.chainId, d.escrow), types: quoteTypes, primaryType: "Quote", message: q });
+  const signature = await signer.signTypedData({ domain: escrowDomain(chainId, d.escrow), types: quoteTypes, primaryType: "Quote", message: q });
   await prisma.$transaction([
     prisma.order.update({ where: { id: order.o.id }, data: { onchainId: q.orderId } }),
     prisma.checkoutQuote.update({ where: { id: order.quote.id }, data: { signature } }),
   ]);
-  await audit(prisma, { actorId: req.buyerId, actorType: req.agentId ? "agent" : "user", action: "checkout.quote", target: order.o.id, data: { totalCents, asset: req.asset, negotiationId, agentId: req.agentId ?? null } });
+  await audit(prisma, { actorId: req.buyerId, actorType: req.agentId ? "agent" : "user", action: "checkout.quote", target: order.o.id, data: { totalCents, asset: req.asset, chainId, negotiationId, agentId: req.agentId ?? null } });
 
   return {
     orderId: order.o.id,
     escrow: d.escrow,
-    chainId: chainConfig.chainId,
+    chainId,
     quote: { ...q, amount: q.amount.toString(), deadline: q.deadline.toString() },
     signature,
     totalCents,
     unitCents,
     feeBps,
     asset: req.asset,
-    usdg: d.usdg,
+    stable: d.stable,
+    stableDecimals: d.stableDecimals,
+    nativeSymbol: d.nativeSymbol,
+    nativeUsdPrice8: price8?.toString() ?? null,
+    usdg: d.stable,
     ethUsdPrice8: price8?.toString() ?? null,
   };
 }

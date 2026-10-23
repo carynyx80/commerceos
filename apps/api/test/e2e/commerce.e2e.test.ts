@@ -108,7 +108,7 @@ describe("commerce journeys", () => {
 
   it("13: ETH payment funds the escrow", async () => {
     const q = (await buyer.req("/checkout/quote", { json: { productId, quantity: 1, asset: "ETH" } })).body;
-    expect(q.asset).toBe("ETH");
+    expect(q.asset, JSON.stringify(q)).toBe("ETH");
     expect(BigInt(q.quote.amount)).toBeGreaterThan(0n);
     await pay(buyer, q);
     await waitFor(async () => (await orderState(buyer, q.orderId)) === "FUNDED", 30_000, "FUNDED (ETH)");

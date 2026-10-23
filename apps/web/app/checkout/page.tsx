@@ -5,9 +5,10 @@ import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { Suspense, useState } from "react";
 import { erc20Abi, type Hex } from "viem";
-import { useAccount, usePublicClient, useWriteContract } from "wagmi";
+import { useAccount, useSwitchChain, useWriteContract } from "wagmi";
+import { getPublicClient } from "wagmi/actions";
 import { commerceEscrowAbi, explorerTx } from "@commerce-os/blockchain";
-import { formatUnits, formatUsd } from "@commerce-os/shared";
+import { ASSETS, NETWORK_LABEL, formatUnits, formatUsd, type PaymentAsset } from "@commerce-os/shared";
 import { useCart, type CartLine } from "@/components/cart";
 import { Check, Lock } from "@/components/icons";
 import { ProductImage } from "@/components/product-image";
@@ -16,22 +17,24 @@ import { useToast } from "@/components/toast";
 import { ConnectButton } from "@/components/wallet/connect-button";
 import { api, ApiError } from "@/lib/api";
 import type { ProductDetail } from "@/lib/types";
-import { CHAIN_ID } from "@/lib/wagmi";
+import { chainIdForAsset, payableAssets, wagmiConfig } from "@/lib/wagmi";
 
-type Asset = "USDG" | "ETH";
+type Asset = PaymentAsset;
 type Step = "idle" | "quoting" | "approving" | "paying" | "confirming" | "funded" | "error";
 
 interface QuoteRes {
   orderId: string;
   escrow: Hex;
-  usdg: Hex;
+  stable: Hex;
+  stableDecimals: number;
+  nativeSymbol: string;
   chainId: number;
   quote: { orderId: Hex; buyer: Hex; seller: Hex; token: Hex; amount: string; deadline: string; termsHash: Hex };
   signature: Hex;
   totalCents: number;
   feeBps: number;
   asset: Asset;
-  ethUsdPrice8: string | null;
+  nativeUsdPrice8: string | null;
 }
 
 export default function CheckoutPage() {
@@ -90,14 +93,15 @@ function Checkout() {
 
 function CheckoutLine({ line, defaultAsset, negotiationId }: { line: CartLine; defaultAsset: Asset; negotiationId?: string }) {
   const p = line.product;
-  const [asset, setAsset] = useState<Asset>(p.acceptedAssets.includes(defaultAsset) ? defaultAsset : p.acceptedAssets[0]);
+  const options = payableAssets(p.acceptedAssets);
+  const [asset, setAsset] = useState<Asset>(options.includes(defaultAsset) ? defaultAsset : (options[0] ?? p.acceptedAssets[0]));
   const [step, setStep] = useState<Step>("idle");
   const [quote, setQuote] = useState<QuoteRes | null>(null);
   const [tx, setTx] = useState<Hex | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [shipping, setShipping] = useState({ name: "", line1: "", city: "", postalCode: "", country: "" });
   const { address, chainId } = useAccount();
-  const client = usePublicClient();
+  const { switchChainAsync } = useSwitchChain();
   const { writeContractAsync } = useWriteContract();
   const toast = useToast();
   const qc = useQueryClient();
@@ -108,7 +112,13 @@ function CheckoutLine({ line, defaultAsset, negotiationId }: { line: CartLine; d
   async function run() {
     setErr(null);
     try {
-      if (chainId !== CHAIN_ID) throw new Error("Switch your wallet to the Commerce OS network first.");
+      // Check the wallet before asking for a quote, so no stock is reserved for a payment that can't be sent.
+      if (!address) throw new Error("Your wallet is disconnected. Reconnect it from the wallet menu (top right), then try again.");
+      const target = chainIdForAsset(asset);
+      if (!target) throw new Error(`${asset} is not available on this deployment.`);
+      // Each asset settles on its own network: USDG/ETH on Robinhood Chain, USDC/BNB on BNB Chain.
+      if (chainId !== target) await switchChainAsync({ chainId: target });
+      const client = getPublicClient(wagmiConfig, { chainId: target });
       setStep("quoting");
       const q = await api<QuoteRes>("/checkout/quote", {
         json: { productId: p.id, quantity: line.quantity, asset, negotiationId, shipping: needsShipping ? shipping : undefined },
@@ -116,18 +126,20 @@ function CheckoutLine({ line, defaultAsset, negotiationId }: { line: CartLine; d
       setQuote(q);
       const args = [{ ...q.quote, amount: BigInt(q.quote.amount), deadline: BigInt(q.quote.deadline) }, q.signature] as const;
       let hash: Hex;
-      if (asset === "USDG") {
-        const allowance = await client!.readContract({ address: q.usdg, abi: erc20Abi, functionName: "allowance", args: [address!, q.escrow] });
+      if (q.chainId !== target) throw new Error("Quote is for a different network. Try again.");
+      if (ASSETS[asset].kind === "stable") {
+        const allowance = await client!.readContract({ address: q.stable, abi: erc20Abi, functionName: "allowance", args: [address!, q.escrow] });
         if (allowance < BigInt(q.quote.amount)) {
           setStep("approving");
-          const ah = await writeContractAsync({ address: q.usdg, abi: erc20Abi, functionName: "approve", args: [q.escrow, BigInt(q.quote.amount)] });
+          const ah = await writeContractAsync({ address: q.stable, abi: erc20Abi, functionName: "approve", args: [q.escrow, BigInt(q.quote.amount)], chainId: target });
           await client!.waitForTransactionReceipt({ hash: ah });
         }
         setStep("paying");
-        hash = await writeContractAsync({ address: q.escrow, abi: commerceEscrowAbi, functionName: "payWithToken", args });
+        hash = await writeContractAsync({ address: q.escrow, abi: commerceEscrowAbi, functionName: "payWithToken", args, chainId: target });
       } else {
         setStep("paying");
-        hash = await writeContractAsync({ address: q.escrow, abi: commerceEscrowAbi, functionName: "payWithEth", args, value: BigInt(q.quote.amount) });
+        // payWithEth is the escrow's native-coin path: ETH on Robinhood Chain, BNB on BNB Chain.
+        hash = await writeContractAsync({ address: q.escrow, abi: commerceEscrowAbi, functionName: "payWithEth", args, value: BigInt(q.quote.amount), chainId: target });
       }
       setTx(hash);
       setStep("confirming");
@@ -164,22 +176,23 @@ function CheckoutLine({ line, defaultAsset, negotiationId }: { line: CartLine; d
         <div className="min-w-0">
           <p className="font-medium">{p.title}</p>
           <p className="text-[13px] text-mist">{p.store.name} · qty <span className="num">{line.quantity}</span></p>
-          <div className="mt-3 flex gap-2">
-            {p.acceptedAssets.map((a) => (
-              <button key={a} disabled={busy || step === "funded"} onClick={() => setAsset(a)} className={`chip num !h-7 !px-3 ${asset === a ? "!border-champagne/60 !text-champagne" : ""}`} aria-pressed={asset === a}>
-                {a}
+          <div className="mt-3 flex flex-wrap gap-2">
+            {options.map((a) => (
+              <button key={a} disabled={busy || step === "funded"} onClick={() => setAsset(a)} className={`chip num !h-7 !px-3 ${asset === a ? "!border-champagne/60 !text-champagne" : ""}`} aria-pressed={asset === a} title={NETWORK_LABEL[ASSETS[a].network]}>
+                {a} <span className="text-[10px] text-dim">{ASSETS[a].network === "bnb" ? "BNB Chain" : "Robinhood"}</span>
               </button>
             ))}
+            {options.length === 0 && <span className="text-[12px] text-warn">None of this listing's payment assets are available here.</span>}
           </div>
         </div>
         <div className="text-right">
           <p className="num text-[20px]">{quote ? formatUsd(quote.totalCents) : negotiationId ? "Negotiated" : formatUsd(p.priceCents * line.quantity)}</p>
           {quote && (
             <p className="num mt-1 text-[12px] text-mist">
-              {quote.asset === "USDG" ? `${formatUnits(BigInt(quote.quote.amount), 6, 2)} USDG` : `${formatUnits(BigInt(quote.quote.amount), 18, 6)} ETH`}
+              {ASSETS[quote.asset].kind === "stable" ? `${formatUnits(BigInt(quote.quote.amount), quote.stableDecimals, 2)} ${quote.asset}` : `${formatUnits(BigInt(quote.quote.amount), 18, 6)} ${quote.asset}`}
             </p>
           )}
-          {quote?.ethUsdPrice8 && <p className="num text-[11px] text-dim">at ${formatUnits(BigInt(quote.ethUsdPrice8), 8, 2)}/ETH</p>}
+          {quote?.nativeUsdPrice8 && <p className="num text-[11px] text-dim">at ${formatUnits(BigInt(quote.nativeUsdPrice8), 8, 2)}/{quote.nativeSymbol}</p>}
         </div>
       </div>
 
@@ -204,7 +217,7 @@ function CheckoutLine({ line, defaultAsset, negotiationId }: { line: CartLine; d
         <div className="mt-5 flex flex-wrap items-center justify-between gap-3">
           <p className="text-[12px] text-dim">
             {quote ? <>Fee {quote.feeBps / 100}% from the seller's proceeds · quote valid until {new Date(Number(quote.quote.deadline) * 1000).toLocaleTimeString()}</> : "You will sign a quote-locked payment. Prices are set by the server."}
-            {tx && <> · {explorerTx(CHAIN_ID, tx) ? <a className="num text-sage" href={explorerTx(CHAIN_ID, tx)!} target="_blank" rel="noreferrer">tx {tx.slice(0, 10)}…</a> : <span className="num">tx {tx.slice(0, 10)}…</span>}</>}
+            {tx && quote && <> · {explorerTx(quote.chainId, tx) ? <a className="num text-sage" href={explorerTx(quote.chainId, tx)!} target="_blank" rel="noreferrer">tx {tx.slice(0, 10)}…</a> : <span className="num">tx {tx.slice(0, 10)}…</span>}</>}
           </p>
           {step === "funded" ? (
             <Link href={`/orders/${quote!.orderId}`} className="btn btn-secondary">View order</Link>
@@ -221,7 +234,7 @@ function CheckoutLine({ line, defaultAsset, negotiationId }: { line: CartLine; d
 
 const STEPS: { key: Step; label: (a: Asset) => string }[] = [
   { key: "quoting", label: () => "Server quote" },
-  { key: "approving", label: (a) => (a === "USDG" ? "Approve USDG" : "No approval needed") },
+  { key: "approving", label: (a) => (ASSETS[a].kind === "stable" ? `Approve ${a}` : "No approval needed") },
   { key: "paying", label: () => "Sign payment" },
   { key: "confirming", label: () => "On-chain confirmation" },
   { key: "funded", label: () => "Funded in escrow" },

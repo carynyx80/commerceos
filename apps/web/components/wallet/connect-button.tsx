@@ -3,10 +3,11 @@ import { AnimatePresence, motion } from "motion/react";
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import { useAccount, useBalance, useConnect, useReadContract, useSwitchChain } from "wagmi";
+import { chainById } from "@commerce-os/blockchain";
 import { erc20Abi } from "viem";
 import { deploymentFor } from "@commerce-os/blockchain";
 import { formatUnits } from "@commerce-os/shared";
-import { CHAIN_ID, chain } from "@/lib/wagmi";
+import { CHAIN_ID, ENABLED_CHAIN_IDS, chain, enabledChains } from "@/lib/wagmi";
 import { shortAddr } from "@/lib/format";
 import { useSession } from "../session";
 import { useToast } from "../toast";
@@ -26,7 +27,7 @@ export function ConnectButton({ compact = false }: { compact?: boolean }) {
     return () => document.removeEventListener("mousedown", close);
   }, []);
 
-  const wrongChain = isConnected && chainId !== CHAIN_ID;
+  const wrongChain = isConnected && !!chainId && !ENABLED_CHAIN_IDS.includes(chainId);
 
   async function doSignIn() {
     try {
@@ -66,7 +67,7 @@ export function ConnectButton({ compact = false }: { compact?: boolean }) {
                 </button>
               ))}
               <p className="mt-2 border-t hairline px-2 pt-2 text-[12px] text-dim">
-                Network: {chain.name} ({CHAIN_ID})
+                Networks: {enabledChains.map((c) => `${c.name} (${c.id})`).join(" · ")}
               </p>
             </Dropdown>
           )}
@@ -104,7 +105,29 @@ export function ConnectButton({ compact = false }: { compact?: boolean }) {
         {open && (
           <Dropdown>
             <Balances address={(address ?? me.address) as `0x${string}`} />
-            {!isConnected && <p className="px-2 pb-2 text-[11.5px] text-warn">Wallet disconnected. Reconnect it to sign transactions.</p>}
+            {!isConnected && (
+              <div className="px-2 pb-2">
+                <p className="text-[11.5px] text-warn">Wallet disconnected. Reconnect it to sign transactions.</p>
+                <div className="mt-1.5 flex flex-wrap gap-1.5">
+                  {connectors.map((c) => (
+                    <button
+                      key={c.uid}
+                      className="btn btn-secondary btn-sm"
+                      onClick={async () => {
+                        try {
+                          await connectAsync({ connector: c });
+                          setOpen(false);
+                        } catch (e: any) {
+                          toast({ title: "Wallet not connected", body: e?.shortMessage ?? e?.message, tone: "error" });
+                        }
+                      }}
+                    >
+                      Reconnect {c.type === "mock" ? "test wallet" : c.name === "Injected" ? "browser wallet" : c.name}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
             <nav className="mt-1 flex flex-col border-t hairline pt-1 text-[14px]" onClick={() => setOpen(false)}>
               <MenuLink href="/orders">Orders</MenuLink>
               <MenuLink href="/agents">Agent Studio</MenuLink>
@@ -132,22 +155,26 @@ function MenuLink({ href, children }: { href: string; children: React.ReactNode 
 }
 
 function Balances({ address }: { address: `0x${string}` }) {
-  const d = deploymentFor(CHAIN_ID);
-  const eth = useBalance({ address });
-  const usdg = useReadContract({
-    address: d?.usdg,
-    abi: erc20Abi,
-    functionName: "balanceOf",
-    args: [address],
-    query: { enabled: !!d },
-  });
   return (
     <div className="px-2 pb-2">
       <p className="eyebrow mb-2">Wallet balances</p>
-      <Row label="ETH" value={eth.data ? formatUnits(eth.data.value, 18, 5) : eth.isError ? "unavailable" : "…"} />
+      {ENABLED_CHAIN_IDS.map((id) => <ChainBalances key={id} chainId={id} address={address} />)}
+    </div>
+  );
+}
+
+function ChainBalances({ chainId, address }: { chainId: number; address: `0x${string}` }) {
+  const d = deploymentFor(chainId);
+  const native = useBalance({ address, chainId });
+  const stable = useReadContract({ address: d?.stable, abi: erc20Abi, functionName: "balanceOf", args: [address], chainId, query: { enabled: !!d } });
+  const nativeSym = d?.nativeSymbol ?? chainById(chainId).nativeCurrency.symbol;
+  return (
+    <div className="mb-1.5">
+      <p className="text-[10.5px] text-dim">{chainById(chainId).name}</p>
+      <Row label={nativeSym} value={native.data ? formatUnits(native.data.value, 18, 5) : native.isError ? "unavailable" : "…"} />
       <Row
-        label={d?.testToken ? "USDG (test)" : "USDG"}
-        value={!d ? "not deployed" : usdg.data !== undefined ? formatUnits(usdg.data as bigint, 6, 2) : usdg.isError ? "unavailable" : "…"}
+        label={d ? `${d.stableSymbol}${d.testToken ? " (test)" : ""}` : "Stablecoin"}
+        value={!d ? "not deployed" : stable.data !== undefined ? formatUnits(stable.data as bigint, d.stableDecimals, 2) : stable.isError ? "unavailable" : "…"}
       />
     </div>
   );

@@ -10,7 +10,7 @@ export interface OfferMessage {
   seller: string;
   priceCents: number;
   currency: "USD";
-  settlementAsset: "USDG" | "ETH";
+  settlementAsset: "USDG" | "ETH" | "USDC" | "BNB";
   quantity: number;
   expiresAt: string;
   termsHash: `0x${string}`;

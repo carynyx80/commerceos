@@ -8,6 +8,8 @@ export const config = {
   port: num(process.env.PORT, 4100),
   env: process.env.NODE_ENV ?? "development",
   chainId: num(process.env.CHAIN_ID, 31337),
+  /** BNB Chain (USDC + BNB); null when not enabled. */
+  bnbChainId: process.env.BNB_CHAIN_ID ? Number(process.env.BNB_CHAIN_ID) : null,
   rpcUrl: process.env.RPC_URL ?? "",
   /** Origins allowed to sign in (SIWE domain) and to make credentialed requests. */
   appOrigins: (process.env.APP_ORIGINS ?? "http://localhost:3100,http://127.0.0.1:3100").split(",").map((s) => s.trim()),

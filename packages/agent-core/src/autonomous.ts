@@ -1,6 +1,7 @@
 import { BaseError, ContractFunctionRevertedError, createWalletClient, http, type Hex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { agentAccountAbi, agentPolicyModuleAbi, chainById, commerceEscrowAbi, ETH_TOKEN } from "@commerce-os/blockchain";
+import { ASSETS } from "@commerce-os/shared";
 
 /** Account ABI plus the errors of the contracts it calls, so reverts decode to a named reason. */
 const checkoutAbi = [...agentAccountAbi, ...agentPolicyModuleAbi.filter((x) => x.type === "error"), ...commerceEscrowAbi.filter((x) => x.type === "error")];
@@ -13,7 +14,7 @@ function revertReason(e: unknown): string {
   }
   return (e as Error)?.message ?? String(e);
 }
-import { chainConfig, checkSpendingPolicy, deployment, publicClient } from "@commerce-os/commerce";
+import { checkSpendingPolicy, deployment, publicClient, rpcUrlFor } from "@commerce-os/commerce";
 import { FLAGS, audit, flag, notify, prisma } from "@commerce-os/database";
 import { formatUsd } from "@commerce-os/shared";
 
@@ -50,8 +51,11 @@ export async function executeAgentPayment(orderId: string, agentId: string, log:
 
   const quote = await prisma.checkoutQuote.findUniqueOrThrow({ where: { id: order.quoteId } });
   if (quote.expiresAt < new Date()) throw new PaymentRefused("Quote expired.");
-  const d = deployment();
-  const client = publicClient();
+  // The smart account lives on one chain; it can only pay orders that settle there.
+  const chainId = agent.accountChainId ?? order.chainId;
+  if (order.chainId !== chainId) throw new PaymentRefused(`This agent's account is on chain ${chainId}; ${order.asset} settles on chain ${order.chainId}.`);
+  const d = deployment(chainId);
+  const client = publicClient(chainId);
   const account = agent.accountAddress as Hex;
   const policy = await client.readContract({ address: d.policyModule, abi: agentPolicyModuleAbi, functionName: "policies", args: [account] });
   const nonce = policy[7];
@@ -60,13 +64,12 @@ export async function executeAgentPayment(orderId: string, agentId: string, log:
     orderId: order.onchainId as Hex,
     buyer: account,
     seller: order.sellerAddress as Hex,
-    token: order.asset === "ETH" ? ETH_TOKEN : d.usdg,
+    token: ASSETS[order.asset].kind === "native" ? ETH_TOKEN : d.stable,
     amount: BigInt(order.amount),
     deadline: BigInt(Math.floor(quote.expiresAt.getTime() / 1000)),
     termsHash: (await termsFor(order.id)) as Hex,
   };
-  const chain = chainById(chainConfig.chainId);
-  const wallet = createWalletClient({ account: exec, chain, transport: http(chainConfig.rpcUrl || chain.rpcUrls.default.http[0]) });
+  const wallet = createWalletClient({ account: exec, chain: chainById(chainId), transport: http(rpcUrlFor(chainId)) });
 
   // Simulate first: a policy or escrow revert surfaces here with its reason and costs nothing.
   try {
@@ -78,7 +81,7 @@ export async function executeAgentPayment(orderId: string, agentId: string, log:
     throw new PaymentRefused(`On-chain policy rejected the payment: ${reason}`);
   }
   const hash = await wallet.writeContract({ address: account, abi: agentAccountAbi, functionName: "agentCheckout", args: [q, quote.signature as Hex, nonce] });
-  await prisma.payment.upsert({ where: { txHash: hash.toLowerCase() }, create: { orderId, txHash: hash.toLowerCase(), chainId: chainConfig.chainId, from: account.toLowerCase(), asset: order.asset, amount: order.amount, status: "SUBMITTED", byAgent: true }, update: {} });
+  await prisma.payment.upsert({ where: { txHash: hash.toLowerCase() }, create: { orderId, txHash: hash.toLowerCase(), chainId, from: account.toLowerCase(), asset: order.asset, amount: order.amount, status: "SUBMITTED", byAgent: true }, update: {} });
   const r = await client.waitForTransactionReceipt({ hash, timeout: 120_000 });
   await audit(prisma, { actorId: agent.id, actorType: "agent", action: "agent.payment_submitted", target: orderId, data: { hash, status: r.status } });
   if (r.status !== "success") throw new Error(`agent payment reverted (${hash})`);

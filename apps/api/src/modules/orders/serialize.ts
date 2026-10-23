@@ -10,6 +10,7 @@ export function orderView(o: Order & { product: Product; store: Store; payments:
     totalCents: o.totalCents,
     feeBps: o.feeBps,
     asset: o.asset,
+    chainId: o.chainId,
     amount: o.amount,
     buyerAddress: o.buyerAddress,
     sellerAddress: o.sellerAddress,
