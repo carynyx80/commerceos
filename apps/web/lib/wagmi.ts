@@ -49,7 +49,12 @@ if (wcProjectId) {
  * Local devnet only: Anvil's unlocked public dev accounts, so the app can be exercised in a
  * browser without an extension. Never enabled on any public network.
  */
-export const DEV_WALLET = CHAIN_ID === 31337 && (BNB_CHAIN_ID === null || BNB_CHAIN_ID === 31338) && process.env.NEXT_PUBLIC_DEV_WALLET !== "false";
+export const DEV_WALLET =
+  CHAIN_ID === 31337 &&
+  (BNB_CHAIN_ID === null || BNB_CHAIN_ID === 31338) &&
+  process.env.NEXT_PUBLIC_DEV_WALLET !== "false" &&
+  // never on a deployed site, even if someone points it at a local chain id
+  !process.env.NEXT_PUBLIC_VERCEL_ENV;
 if (DEV_WALLET) {
   connectors.push(
     mock({
