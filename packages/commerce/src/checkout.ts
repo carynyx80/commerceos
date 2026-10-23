@@ -1,5 +1,5 @@
 import { getAddress, type Address, type Hex } from "viem";
-import { audit, prisma, type PaymentAssetKind } from "@commerce-os/database";
+import { FLAGS, audit, flag, prisma, type PaymentAssetKind } from "@commerce-os/database";
 import { ETH_TOKEN, escrowDomain, onchainOrderId, quoteTypes, termsHash, type EscrowQuote } from "@commerce-os/blockchain";
 import { centsToUsdg, centsToWei } from "@commerce-os/shared";
 import { chainConfig, currentFeeBps, deployment, ethUsdPrice8, merchantActiveOnChain, quoteSigner } from "./chain";
@@ -39,6 +39,7 @@ export interface QuoteResult {
  * AWAITING_PAYMENT and reserves inventory until the quote deadline.
  */
 export async function createCheckoutQuote(req: QuoteRequest): Promise<QuoteResult> {
+  if (await flag(prisma, FLAGS.checkoutPaused)) throw new CommerceError(503, "CHECKOUT_PAUSED", "Checkout is temporarily paused by the operators. No new payments are being accepted.");
   const d = deployment();
   const signer = quoteSigner();
   const payer = getAddress(req.payerAddress);

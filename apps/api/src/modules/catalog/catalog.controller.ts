@@ -64,10 +64,10 @@ export class CatalogController {
     const stores = await prisma.store.findMany({
       where: { active: true },
       include: { merchant: true, _count: { select: { products: { where: { status: "ACTIVE" } }, orders: { where: { state: "RELEASED", updatedAt: { gte: since } } } } } },
-      take: 24,
+      take: 60,
     });
     stores.sort((a, b) => b._count.orders - a._count.orders || b._count.products - a._count.products);
-    return { items: stores.slice(0, 8).map((s) => ({ ...storeSummary(s), productCount: s._count.products })) };
+    return { items: stores.map((s) => ({ ...storeSummary(s), payoutAddress: s.payoutAddress, productCount: s._count.products })) };
   }
 
   @Get("stores/:slug")

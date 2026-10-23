@@ -1,5 +1,5 @@
-import { http, createConfig, type CreateConnectorFn } from "wagmi";
-import { injected, walletConnect } from "wagmi/connectors";
+import { http, createConfig, injected, mock, type CreateConnectorFn } from "wagmi";
+import { walletConnect } from "wagmi/connectors";
 import { chainById } from "@commerce-os/blockchain";
 
 export const CHAIN_ID = Number(process.env.NEXT_PUBLIC_CHAIN_ID ?? 31337);
@@ -19,6 +19,20 @@ if (wcProjectId) {
         icons: [],
       },
       showQrModal: true,
+    }),
+  );
+}
+
+/**
+ * Local devnet only: Anvil's unlocked public dev accounts, so the app can be exercised in a
+ * browser without an extension. Never enabled on any public network.
+ */
+export const DEV_WALLET = CHAIN_ID === 31337 && process.env.NEXT_PUBLIC_DEV_WALLET !== "false";
+if (DEV_WALLET) {
+  connectors.push(
+    mock({
+      accounts: ["0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC", "0x90F79bf6EB2c4f870365E785982E1f101E93b906", "0x15d34AAf54267DB7D7c367839AAf71A00a2C6A65"],
+      features: { reconnect: true },
     }),
   );
 }

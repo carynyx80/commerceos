@@ -13,12 +13,13 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@commerce-os/blockchain": "*",
+    "@commerce-os/commerce": "*",
     "@commerce-os/database": "*",
     "@commerce-os/shared": "*",
-    "@commerce-os/blockchain": "*",
     "openai": "^5",
     "zod": "3.25.76",
-    "@commerce-os/commerce": "*"
+    "zod-to-json-schema": "^3.24.6"
   },
   "devDependencies": {
     "vitest": "3.2.4"

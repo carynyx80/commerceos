@@ -9,11 +9,15 @@ import { CartController } from "./modules/cart/cart.controller";
 import { MerchantController } from "./modules/merchant/merchant.controller";
 import { NotificationsController } from "./modules/notifications/notifications.controller";
 import { OrdersController } from "./modules/orders/orders.controller";
+import { AnalyticsController } from "./modules/merchant/analytics.controller";
+import { UploadsController } from "./modules/uploads/uploads.controller";
+import { AgentsController } from "./modules/agents/agents.controller";
+import { AdminController } from "./modules/admin/admin.controller";
 import { HealthController } from "./modules/health/health.controller";
 
 @Module({
   imports: [ThrottlerModule.forRoot([{ name: "default", ttl: 60_000, limit: 300 }])],
-  controllers: [AuthController, CatalogController, CartController, MerchantController, NotificationsController, OrdersController, HealthController],
+  controllers: [AuthController, CatalogController, CartController, MerchantController, NotificationsController, OrdersController, AnalyticsController, UploadsController, AgentsController, AdminController, HealthController],
   providers: [CatalogService, { provide: APP_GUARD, useClass: ThrottlerGuard }, { provide: APP_GUARD, useClass: AuthGuard }],
 })
 export class AppModule {}

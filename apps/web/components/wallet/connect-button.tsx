@@ -61,7 +61,7 @@ export function ConnectButton({ compact = false }: { compact?: boolean }) {
                     }
                   }}
                 >
-                  {c.name === "Injected" ? "Browser wallet" : c.name}
+                  {c.type === "mock" ? "Local devnet test wallet" : c.name === "Injected" ? "Browser wallet" : c.name}
                   <span className="text-dim">→</span>
                 </button>
               ))}

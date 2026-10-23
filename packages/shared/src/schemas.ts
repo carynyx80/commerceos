@@ -7,6 +7,11 @@ export const slug = z
   .max(48)
   .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/, "lowercase letters, numbers and dashes");
 export const asset = z.enum(["USDG", "ETH"]);
+/** https image URL, or a file uploaded to Commerce OS media storage. */
+export const imageRef = z
+  .string()
+  .max(500)
+  .refine((v) => /^\/api\/uploads\/[a-f0-9]{32}\.(jpg|png|webp)$/.test(v) || /^https:\/\/[^\s]+$/.test(v), "must be an https URL or an uploaded image");
 
 export const createStoreSchema = z.object({
   name: z.string().trim().min(2).max(80),
@@ -14,8 +19,8 @@ export const createStoreSchema = z.object({
   tagline: z.string().trim().max(140).optional().default(""),
   description: z.string().trim().max(4000).optional().default(""),
   payoutAddress: address,
-  logoUrl: z.string().url().optional().nullable(),
-  bannerUrl: z.string().url().optional().nullable(),
+  logoUrl: imageRef.optional().nullable(),
+  bannerUrl: imageRef.optional().nullable(),
   returnPolicy: z.string().trim().max(2000).optional().default(""),
 });
 export type CreateStoreInput = z.infer<typeof createStoreSchema>;
@@ -27,7 +32,7 @@ export const productSchema = z.object({
   category: z.string().trim().min(2).max(40),
   priceCents: z.number().int().min(100).max(10_000_000),
   inventory: z.number().int().min(0).max(1_000_000),
-  images: z.array(z.string().url()).max(8).default([]),
+  images: z.array(imageRef).max(8).default([]),
   specs: z.record(z.string().max(60), z.string().max(200)).default({}),
   acceptedAssets: z.array(asset).min(1).default(["USDG", "ETH"]),
   deliveryType: z.enum(["PHYSICAL", "DIGITAL"]).default("PHYSICAL"),

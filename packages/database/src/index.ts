@@ -10,3 +10,4 @@ if (process.env.NODE_ENV !== "production") g.__cosPrisma = prisma;
 export { enqueueJob, claimJobs, completeJob, failJob } from "./jobs";
 export { audit } from "./audit";
 export { notify } from "./notify";
+export { FLAGS, flag } from "./flags";

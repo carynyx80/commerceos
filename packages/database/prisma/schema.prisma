@@ -659,3 +659,12 @@ model IdempotencyRecord {
   response  Json?
   createdAt DateTime @default(now())
 }
+
+/// Runtime kill switches (e.g. "checkout.paused", "agents.paused"). Changed only by admins, always audited.
+model SystemFlag {
+  key       String   @id
+  value     Boolean
+  reason    String   @default("")
+  updatedBy String?
+  updatedAt DateTime @updatedAt
+}
