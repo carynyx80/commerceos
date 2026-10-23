@@ -13,7 +13,7 @@ import { useToast } from "@/components/toast";
 import { api } from "@/lib/api";
 import { shortAddr, timeAgo } from "@/lib/format";
 import { CHAIN_ID } from "@/lib/wagmi";
-import { PolicyFields, StatusChip, policyPayload, type AgentRow, type PolicyForm } from "../page";
+import { PolicyFields, StatusChip, policyPayload, type AgentRow, type PolicyForm } from "../shared";
 
 interface Detail extends AgentRow {
   tasks: { id: string; status: string; step: string | null; createdAt: string; toolExecutions: { tool: string; error: string | null; durationMs: number | null }[] }[];

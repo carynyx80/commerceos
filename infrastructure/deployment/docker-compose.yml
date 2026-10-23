@@ -1,0 +1,27 @@
+# Local/staging stack for the long-running services. The web app deploys to Vercel.
+services:
+  postgres:
+    image: postgres:17
+    environment: { POSTGRES_USER: commerce, POSTGRES_PASSWORD: commerce, POSTGRES_DB: commerce_os, TZ: UTC, PGTZ: UTC }
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck: { test: ["CMD", "pg_isready", "-U", "commerce"], interval: 5s }
+  migrate:
+    build: { context: ../.., dockerfile: infrastructure/deployment/Dockerfile, args: { APP: api } }
+    working_dir: /app/packages/database
+    command: ["npx", "prisma", "migrate", "deploy"]
+    environment: { DATABASE_URL: postgresql://commerce:commerce@postgres:5432/commerce_os }
+    depends_on: { postgres: { condition: service_healthy } }
+  api:
+    build: { context: ../.., dockerfile: infrastructure/deployment/Dockerfile, args: { APP: api } }
+    env_file: ../../apps/api/.env
+    environment: { DATABASE_URL: postgresql://commerce:commerce@postgres:5432/commerce_os, PORT: "4100" }
+    ports: ["4100:4100"]
+    depends_on: { migrate: { condition: service_completed_successfully } }
+    healthcheck: { test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4100/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"], interval: 15s }
+  worker:
+    build: { context: ../.., dockerfile: infrastructure/deployment/Dockerfile, args: { APP: worker } }
+    env_file: ../../apps/worker/.env
+    environment: { DATABASE_URL: postgresql://commerce:commerce@postgres:5432/commerce_os }
+    depends_on: { migrate: { condition: service_completed_successfully } }
+    restart: unless-stopped
+volumes: { pgdata: {} }

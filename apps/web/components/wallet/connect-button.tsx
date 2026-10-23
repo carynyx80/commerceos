@@ -37,7 +37,7 @@ export function ConnectButton({ compact = false }: { compact?: boolean }) {
     }
   }
 
-  if (!isConnected) {
+  if (!isConnected && !me) {
     return (
       <div className="relative" ref={ref}>
         <button className={`btn btn-secondary ${compact ? "btn-sm" : ""}`} onClick={() => setOpen((v) => !v)} disabled={isPending}>
@@ -98,12 +98,13 @@ export function ConnectButton({ compact = false }: { compact?: boolean }) {
     <div className="relative" ref={ref}>
       <button className={`btn btn-secondary ${compact ? "btn-sm" : ""} num`} onClick={() => setOpen((v) => !v)} aria-haspopup="menu">
         <span className="size-1.5 rounded-full bg-ok" />
-        {shortAddr(address)}
+        {shortAddr(address ?? me.address)}
       </button>
       <AnimatePresence>
         {open && (
           <Dropdown>
-            <Balances address={address!} />
+            <Balances address={(address ?? me.address) as `0x${string}`} />
+            {!isConnected && <p className="px-2 pb-2 text-[11.5px] text-warn">Wallet disconnected. Reconnect it to sign transactions.</p>}
             <nav className="mt-1 flex flex-col border-t hairline pt-1 text-[14px]" onClick={() => setOpen(false)}>
               <MenuLink href="/orders">Orders</MenuLink>
               <MenuLink href="/agents">Agent Studio</MenuLink>

@@ -112,7 +112,7 @@ function Workspace() {
 
   const center = (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="flex items-center justify-between border-b hairline px-5 py-3">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b hairline px-5 py-3">
         <div className="min-w-0">
           <p className="truncate text-[14px] font-medium">{conv.data?.conversation.title ?? "New shopping task"}</p>
           <p className="text-[11.5px] text-dim">{conv.data?.conversation.agent ? <>Agent · {conv.data.conversation.agent.name}</> : convId ? "No agent · you approve every purchase" : "Pick an agent or shop yourself"}</p>
