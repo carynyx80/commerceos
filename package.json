@@ -1,0 +1,22 @@
+{
+  "name": "commerce-os",
+  "private": true,
+  "workspaces": ["packages/*", "apps/*"],
+  "scripts": {
+    "dev:web": "npm run dev -w @commerce-os/web",
+    "dev:api": "npm run dev -w @commerce-os/api",
+    "dev:worker": "npm run dev -w @commerce-os/worker",
+    "db:start": "npm run db:start -w @commerce-os/database",
+    "db:migrate": "npm run migrate -w @commerce-os/database",
+    "db:seed": "npm run seed -w @commerce-os/database",
+    "build": "npm run build --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "test:contracts": "cd contracts && forge test"
+  },
+  "devDependencies": {
+    "typescript": "5.9.3",
+    "prettier": "3.6.2"
+  },
+  "engines": { "node": ">=22" }
+}

@@ -1,0 +1,661 @@
+// Commerce OS data model. Money is integer: USD cents for prices, base units (as
+// decimal strings) for on-chain amounts. Private data (shipping, messages) stays here,
+// never on-chain.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  USER
+  ADMIN
+}
+
+enum PaymentAssetKind {
+  USDG
+  ETH
+}
+
+enum ProductStatus {
+  DRAFT
+  ACTIVE
+  ARCHIVED
+  REMOVED
+}
+
+enum DeliveryType {
+  PHYSICAL
+  DIGITAL
+}
+
+enum OrderState {
+  CREATED
+  AWAITING_PAYMENT
+  FUNDED
+  ACCEPTED
+  IN_FULFILLMENT
+  FULFILLED
+  RELEASED
+  CANCELLED
+  REFUNDED
+  DISPUTED
+}
+
+enum AgentType {
+  BUYER
+  SELLER
+}
+
+enum AgentStatus {
+  ACTIVE
+  PAUSED
+  REVOKED
+}
+
+enum TaskStatus {
+  QUEUED
+  RUNNING
+  WAITING
+  SUCCEEDED
+  FAILED
+  CANCELLED
+}
+
+enum NegotiationStatus {
+  OPEN
+  ACCEPTED
+  REJECTED
+  EXPIRED
+  CANCELLED
+  CONVERTED
+}
+
+enum OfferStatus {
+  PENDING
+  ACCEPTED
+  REJECTED
+  COUNTERED
+  EXPIRED
+  WITHDRAWN
+}
+
+enum OfferParty {
+  BUYER
+  SELLER
+}
+
+enum PaymentStatus {
+  PENDING
+  SUBMITTED
+  CONFIRMED
+  FAILED
+}
+
+enum DisputeStatus {
+  OPEN
+  EVIDENCE
+  RESOLVED_BUYER
+  RESOLVED_SELLER
+  RESOLVED_SPLIT
+  CLOSED
+}
+
+enum JobStatus {
+  QUEUED
+  RUNNING
+  DONE
+  FAILED
+  CANCELLED
+}
+
+model User {
+  id          String   @id @default(cuid())
+  displayName String?
+  role        Role     @default(USER)
+  suspended   Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  wallets       Wallet[]
+  sessions      Session[]
+  merchant      Merchant?
+  cart          Cart?
+  savedProducts SavedProduct[]
+  agents        Agent[]
+  ordersBought  Order[]        @relation("buyer")
+  negotiations  Negotiation[]  @relation("negBuyer")
+  reviews       Review[]
+  notifications Notification[]
+  conversations Conversation[]
+}
+
+model Wallet {
+  id        String   @id @default(cuid())
+  address   String   @unique // lowercase
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+}
+
+/// One-time SIWE nonces. Consumed on verify to prevent replay.
+model AuthNonce {
+  nonce     String    @id
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+}
+
+model Session {
+  id         String    @id // sha256 of the opaque cookie token
+  userId     String
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  address    String
+  chainId    Int
+  csrfToken  String
+  userAgent  String?
+  expiresAt  DateTime
+  revokedAt  DateTime?
+  createdAt  DateTime  @default(now())
+  lastSeenAt DateTime  @default(now())
+
+  @@index([userId])
+}
+
+model Merchant {
+  id         String   @id @default(cuid())
+  userId     String   @unique
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  verified   Boolean  @default(false)
+  verifiedAt DateTime?
+  createdAt  DateTime @default(now())
+  stores     Store[]
+}
+
+model Store {
+  id            String   @id @default(cuid())
+  merchantId    String
+  merchant      Merchant @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  slug          String   @unique
+  name          String
+  tagline       String   @default("")
+  description   String   @default("")
+  logoUrl       String?
+  bannerUrl     String?
+  payoutAddress String
+  returnPolicy  String   @default("")
+  /// Development fixture stores are seeded data and are labelled as such in the UI.
+  isFixture     Boolean  @default(false)
+  active        Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  products     Product[]
+  orders       Order[]
+  agents       Agent[]
+  negotiations Negotiation[]
+
+  @@index([merchantId])
+}
+
+model Product {
+  id              String        @id @default(cuid())
+  storeId         String
+  store           Store         @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  title           String
+  slug            String
+  description     String        @default("")
+  category        String
+  priceCents      Int
+  /// Lowest price the seller agent may accept. Never sent to buyers.
+  floorPriceCents Int?
+  images          String[]
+  specs           Json          @default("{}")
+  acceptedAssets  PaymentAssetKind[]
+  deliveryType    DeliveryType  @default(PHYSICAL)
+  shippingInfo    String        @default("")
+  negotiable      Boolean       @default(false)
+  status          ProductStatus @default(ACTIVE)
+  featured        Boolean       @default(false)
+  isFixture       Boolean       @default(false)
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  variants     ProductVariant[]
+  inventory    Inventory?
+  cartItems    CartItem[]
+  saved        SavedProduct[]
+  orderItems   Order[]
+  negotiations Negotiation[]
+  reviews      Review[]
+
+  @@unique([storeId, slug])
+  @@index([status, category])
+  @@index([priceCents])
+  @@index([createdAt])
+}
+
+model ProductVariant {
+  id         String  @id @default(cuid())
+  productId  String
+  product    Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+  name       String
+  priceCents Int?
+  sku        String?
+
+  @@index([productId])
+}
+
+/// Stock is reserved when an order is created and released on cancel / expiry.
+model Inventory {
+  productId String   @id
+  product   Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  available Int
+  reserved  Int      @default(0)
+  updatedAt DateTime @updatedAt
+}
+
+model Cart {
+  id        String     @id @default(cuid())
+  userId    String     @unique
+  user      User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  items     CartItem[]
+  updatedAt DateTime   @updatedAt
+}
+
+model CartItem {
+  id        String  @id @default(cuid())
+  cartId    String
+  cart      Cart    @relation(fields: [cartId], references: [id], onDelete: Cascade)
+  productId String
+  product   Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+  quantity  Int
+
+  @@unique([cartId, productId])
+}
+
+model SavedProduct {
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  productId String
+  product   Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+
+  @@id([userId, productId])
+}
+
+model Agent {
+  id          String      @id @default(cuid())
+  ownerId     String
+  owner       User        @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  name        String
+  type        AgentType
+  description String      @default("")
+  preferences String      @default("")
+  status      AgentStatus @default(ACTIVE)
+  /// Seller agents act for one store.
+  storeId     String?
+  store       Store?      @relation(fields: [storeId], references: [id], onDelete: SetNull)
+  /// On-chain AgentAccount address, when the owner has deployed one.
+  accountAddress String?
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  policy        AgentPolicy?
+  tasks         AgentTask[]
+  conversations Conversation[]
+  negotiations  Negotiation[]  @relation("buyerAgent")
+  sellerNegs    Negotiation[]  @relation("sellerAgent")
+  orders        Order[]
+
+  @@index([ownerId])
+  @@index([storeId])
+}
+
+model AgentPolicy {
+  agentId              String             @id
+  agent                Agent              @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  maxPerOrderCents     Int
+  rollingLimitCents    Int
+  rollingWindowDays    Int                @default(30)
+  allowedAssets        PaymentAssetKind[]
+  approvedCategories   String[]
+  approvedStoreIds     String[]
+  expiresAt            DateTime
+  maxDiscountAskBps    Int                @default(1500)
+  maxNegotiationRounds Int                @default(4)
+  automationEnabled    Boolean            @default(false)
+  revokedAt            DateTime?
+  /// Bumped on every owner change; tasks capture it so stale approvals cannot be replayed.
+  version              Int                @default(1)
+  updatedAt            DateTime           @updatedAt
+}
+
+model Conversation {
+  id        String    @id @default(cuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  agentId   String?
+  agent     Agent?    @relation(fields: [agentId], references: [id], onDelete: SetNull)
+  title     String    @default("New shopping task")
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  messages  Message[]
+  tasks     AgentTask[]
+
+  @@index([userId, updatedAt])
+}
+
+model Message {
+  id             String       @id @default(cuid())
+  conversationId String
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  role           String // user | assistant | tool | event
+  content        String
+  data           Json?
+  createdAt      DateTime     @default(now())
+
+  @@index([conversationId, createdAt])
+}
+
+model AgentTask {
+  id             String        @id @default(cuid())
+  agentId        String?
+  agent          Agent?        @relation(fields: [agentId], references: [id], onDelete: SetNull)
+  conversationId String?
+  conversation   Conversation? @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  kind           String // shop | negotiate | respond_offer
+  status         TaskStatus    @default(QUEUED)
+  input          Json
+  result         Json?
+  error          String?
+  step           String?
+  policyVersion  Int?
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+  finishedAt     DateTime?
+
+  toolExecutions AgentToolExecution[]
+
+  @@index([agentId, createdAt])
+  @@index([status])
+}
+
+model AgentToolExecution {
+  id         String    @id @default(cuid())
+  taskId     String
+  task       AgentTask @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  tool       String
+  input      Json
+  output     Json?
+  error      String?
+  durationMs Int?
+  createdAt  DateTime  @default(now())
+
+  @@index([taskId, createdAt])
+}
+
+model Negotiation {
+  id            String            @id @default(cuid())
+  productId     String
+  product       Product           @relation(fields: [productId], references: [id])
+  storeId       String
+  store         Store             @relation(fields: [storeId], references: [id])
+  buyerId       String
+  buyer         User              @relation("negBuyer", fields: [buyerId], references: [id])
+  buyerAgentId  String?
+  buyerAgent    Agent?            @relation("buyerAgent", fields: [buyerAgentId], references: [id], onDelete: SetNull)
+  sellerAgentId String?
+  sellerAgent   Agent?            @relation("sellerAgent", fields: [sellerAgentId], references: [id], onDelete: SetNull)
+  quantity      Int               @default(1)
+  asset         PaymentAssetKind
+  status        NegotiationStatus @default(OPEN)
+  agreedCents   Int?
+  rounds        Int               @default(0)
+  expiresAt     DateTime
+  createdAt     DateTime          @default(now())
+  updatedAt     DateTime          @updatedAt
+
+  offers Offer[]
+  quote  CheckoutQuote?
+
+  @@index([buyerId, createdAt])
+  @@index([storeId, status])
+}
+
+model Offer {
+  id            String      @id @default(cuid())
+  negotiationId String
+  negotiation   Negotiation @relation(fields: [negotiationId], references: [id], onDelete: Cascade)
+  from          OfferParty
+  priceCents    Int
+  quantity      Int
+  message       String      @default("")
+  termsHash     String
+  status        OfferStatus @default(PENDING)
+  byAgent       Boolean     @default(false)
+  expiresAt     DateTime
+  createdAt     DateTime    @default(now())
+
+  @@index([negotiationId, createdAt])
+}
+
+/// Server-signed, time-limited price quote. Orders are created only from quotes.
+model CheckoutQuote {
+  id            String           @id @default(cuid())
+  negotiationId String?          @unique
+  negotiation   Negotiation?     @relation(fields: [negotiationId], references: [id])
+  productId     String
+  buyerId       String
+  quantity      Int
+  unitCents     Int
+  totalCents    Int
+  asset         PaymentAssetKind
+  /// Amount in asset base units, as a decimal string.
+  amount        String
+  ethUsdPrice8  String?
+  signature     String
+  expiresAt     DateTime
+  usedAt        DateTime?
+  createdAt     DateTime         @default(now())
+}
+
+model Order {
+  id            String           @id @default(cuid())
+  /// bytes32 id used on-chain (keccak of the cuid). Unique so an order can be funded once.
+  onchainId     String           @unique
+  buyerId       String
+  buyer         User             @relation("buyer", fields: [buyerId], references: [id])
+  buyerAddress  String
+  storeId       String
+  store         Store            @relation(fields: [storeId], references: [id])
+  productId     String
+  product       Product          @relation(fields: [productId], references: [id])
+  agentId       String?
+  agent         Agent?           @relation(fields: [agentId], references: [id], onDelete: SetNull)
+  quoteId       String           @unique
+  quantity      Int
+  unitCents     Int
+  totalCents    Int
+  feeBps        Int
+  asset         PaymentAssetKind
+  amount        String
+  sellerAddress String
+  state         OrderState       @default(AWAITING_PAYMENT)
+  /// Encrypted at rest in production (see docs/security.md); never sent on-chain.
+  shipping      Json?
+  trackingInfo  String?
+  paymentDeadline DateTime
+  createdAt     DateTime         @default(now())
+  updatedAt     DateTime         @updatedAt
+
+  payments    Payment[]
+  events      EscrowEvent[]
+  dispute     Dispute?
+  review      Review?
+  transitions OrderTransition[]
+
+  @@index([buyerId, createdAt])
+  @@index([storeId, createdAt])
+  @@index([state])
+}
+
+model OrderTransition {
+  id        String     @id @default(cuid())
+  orderId   String
+  order     Order      @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  from      OrderState
+  to        OrderState
+  source    String // indexer | api | worker
+  txHash    String?
+  createdAt DateTime   @default(now())
+
+  @@index([orderId, createdAt])
+}
+
+model Payment {
+  id        String        @id @default(cuid())
+  orderId   String
+  order     Order         @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  txHash    String        @unique
+  chainId   Int
+  from      String
+  asset     PaymentAssetKind
+  amount    String
+  status    PaymentStatus @default(SUBMITTED)
+  byAgent   Boolean       @default(false)
+  createdAt DateTime      @default(now())
+  updatedAt DateTime      @updatedAt
+}
+
+/// Raw escrow logs. (chainId, txHash, logIndex) is unique, so indexing is idempotent.
+model EscrowEvent {
+  id          String   @id @default(cuid())
+  chainId     Int
+  blockNumber BigInt
+  blockHash   String
+  txHash      String
+  logIndex    Int
+  name        String
+  orderOnchainId String
+  orderId     String?
+  order       Order?   @relation(fields: [orderId], references: [id])
+  args        Json
+  removed     Boolean  @default(false)
+  createdAt   DateTime @default(now())
+
+  @@unique([chainId, txHash, logIndex])
+  @@index([orderOnchainId])
+  @@index([chainId, blockNumber])
+}
+
+model IndexerCursor {
+  id          String   @id // e.g. "escrow:31337"
+  blockNumber BigInt
+  blockHash   String
+  updatedAt   DateTime @updatedAt
+}
+
+model Dispute {
+  id         String        @id @default(cuid())
+  orderId    String        @unique
+  order      Order         @relation(fields: [orderId], references: [id])
+  openedBy   String
+  reason     String
+  status     DisputeStatus @default(OPEN)
+  resolution String?
+  buyerShareBps Int?
+  evidenceDeadline DateTime
+  resolvedAt DateTime?
+  createdAt  DateTime      @default(now())
+  evidence   DisputeEvidence[]
+}
+
+model DisputeEvidence {
+  id        String   @id @default(cuid())
+  disputeId String
+  dispute   Dispute  @relation(fields: [disputeId], references: [id], onDelete: Cascade)
+  authorId  String
+  party     String // BUYER | SELLER | ARBITER
+  content   String
+  hash      String
+  createdAt DateTime @default(now())
+}
+
+/// Reviews are only allowed for orders that reached RELEASED.
+model Review {
+  id        String   @id @default(cuid())
+  orderId   String   @unique
+  order     Order    @relation(fields: [orderId], references: [id])
+  productId String
+  product   Product  @relation(fields: [productId], references: [id])
+  authorId  String
+  author    User     @relation(fields: [authorId], references: [id])
+  rating    Int
+  body      String
+  createdAt DateTime @default(now())
+
+  @@index([productId])
+}
+
+model Notification {
+  id        String    @id @default(cuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  kind      String
+  title     String
+  body      String
+  href      String?
+  readAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId, createdAt])
+}
+
+model AuditLog {
+  id        String   @id @default(cuid())
+  actorId   String?
+  actorType String // user | admin | agent | system
+  action    String
+  target    String?
+  data      Json?
+  ip        String?
+  createdAt DateTime @default(now())
+
+  @@index([action, createdAt])
+  @@index([actorId, createdAt])
+}
+
+/// Durable job queue (SELECT … FOR UPDATE SKIP LOCKED). Survives restarts.
+model Job {
+  id          String    @id @default(cuid())
+  kind        String
+  payload     Json
+  status      JobStatus @default(QUEUED)
+  /// Callers pass a stable key so the same work is never enqueued twice.
+  idempotencyKey String? @unique
+  attempts    Int       @default(0)
+  maxAttempts Int       @default(3)
+  runAt       DateTime  @default(now())
+  lockedAt    DateTime?
+  lockedBy    String?
+  lastError   String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@index([status, runAt])
+}
+
+/// Idempotency for side-effecting API calls and agent payments.
+model IdempotencyRecord {
+  key       String   @id
+  scope     String
+  response  Json?
+  createdAt DateTime @default(now())
+}

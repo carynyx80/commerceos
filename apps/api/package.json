@@ -1,0 +1,39 @@
+{
+  "name": "@commerce-os/api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch --env-file=.env src/main.ts",
+    "start": "tsx --env-file-if-exists=.env src/main.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run test/unit",
+    "test:e2e": "vitest run test/e2e"
+  },
+  "dependencies": {
+    "@commerce-os/agent-core": "*",
+    "@commerce-os/blockchain": "*",
+    "@commerce-os/database": "*",
+    "@commerce-os/shared": "*",
+    "@nestjs/common": "^11",
+    "@nestjs/core": "^11",
+    "@nestjs/platform-express": "^11",
+    "@nestjs/swagger": "^11",
+    "@nestjs/throttler": "^6",
+    "cookie-parser": "^1",
+    "reflect-metadata": "^0.2",
+    "rxjs": "^7",
+    "viem": "^2",
+    "zod": "3.25.76",
+    "@commerce-os/commerce": "*"
+  },
+  "devDependencies": {
+    "@types/cookie-parser": "^1",
+    "@types/express": "^5",
+    "@types/node": "^22",
+    "tsx": "^4",
+    "vitest": "3.2.4",
+    "supertest": "^7",
+    "@types/supertest": "^6"
+  }
+}

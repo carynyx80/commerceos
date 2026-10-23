@@ -1,0 +1,17 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "commerce-web",
+      "runtimeExecutable": "bash",
+      "runtimeArgs": ["-c", "export PATH=$HOME/.local/node/bin:$PATH; cd apps/web && NEXT_TELEMETRY_DISABLED=1 npx next dev -p 3100"],
+      "port": 3100
+    },
+    {
+      "name": "commerce-api",
+      "runtimeExecutable": "bash",
+      "runtimeArgs": ["-c", "export PATH=$HOME/.local/node/bin:$PATH; cd apps/api && npx tsx watch src/main.ts"],
+      "port": 4100
+    }
+  ]
+}
