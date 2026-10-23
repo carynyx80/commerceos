@@ -1,3 +1,4 @@
+import OpenAI from "openai";
 import { AgentConfigError, PaymentRefused, executeAgentPayment, phraseSellerReply, runShoppingTurn } from "@commerce-os/agent-core";
 import { sellerAgentRespond } from "@commerce-os/commerce";
 import { notify, prisma, type Job } from "@commerce-os/database";
@@ -17,11 +18,13 @@ export const agentHandlers: Record<string, Handler> = {
       await notify(prisma, task.conversation.userId, { kind: "agent.task_complete", title: "Your agent replied", body: task.conversation.title, href: `/workspace?c=${task.conversation.id}` });
     } catch (e) {
       const msg = (e as Error).message;
-      const final = e instanceof AgentConfigError || job.attempts >= job.maxAttempts;
+      // Config errors and OpenAI 4xx (other than rate limits) won't succeed on retry.
+      const permanent = e instanceof AgentConfigError || (e instanceof OpenAI.APIError && typeof e.status === "number" && e.status >= 400 && e.status < 500 && e.status !== 429);
+      const final = permanent || job.attempts >= job.maxAttempts;
       if (final) {
         await prisma.agentTask.update({ where: { id: taskId }, data: { status: "FAILED", error: msg.slice(0, 1000), finishedAt: new Date() } });
         await prisma.message.create({ data: { conversationId: task.conversation.id, role: "error", content: e instanceof AgentConfigError ? msg : `The agent hit an error and stopped: ${msg.slice(0, 300)}` } });
-        return; // do not retry configuration errors
+        return; // permanent failure: recorded, not retried
       }
       throw e;
     }

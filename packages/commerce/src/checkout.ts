@@ -176,16 +176,22 @@ export async function createCheckoutQuote(req: QuoteRequest): Promise<QuoteResul
   };
 }
 
+/** Cancel an order that was never paid and release its stock. Idempotent; no-op once paid. */
+export async function cancelUnpaidOrder(orderId: string, source: "worker" | "api" = "worker"): Promise<boolean> {
+  return prisma.$transaction(async (tx) => {
+    const o = await tx.order.findUnique({ where: { id: orderId } });
+    if (!o) return false;
+    const n = await tx.order.updateMany({ where: { id: orderId, state: "AWAITING_PAYMENT" }, data: { state: "CANCELLED" } });
+    if (n.count !== 1) return false;
+    await tx.orderTransition.create({ data: { orderId, from: "AWAITING_PAYMENT", to: "CANCELLED", source } });
+    await tx.inventory.update({ where: { productId: o.productId }, data: { reserved: { decrement: o.quantity } } });
+    return true;
+  });
+}
+
 /** Release stock held by unpaid orders whose quote expired. Idempotent. */
 export async function expireUnpaidOrders(now = new Date()) {
   const stale = await prisma.order.findMany({ where: { state: "AWAITING_PAYMENT", paymentDeadline: { lt: new Date(now.getTime() - 5 * 60_000) } }, take: 100 });
-  for (const o of stale) {
-    await prisma.$transaction(async (tx) => {
-      const n = await tx.order.updateMany({ where: { id: o.id, state: "AWAITING_PAYMENT" }, data: { state: "CANCELLED" } });
-      if (n.count !== 1) return;
-      await tx.orderTransition.create({ data: { orderId: o.id, from: "AWAITING_PAYMENT", to: "CANCELLED", source: "worker" } });
-      await tx.inventory.update({ where: { productId: o.productId }, data: { reserved: { decrement: o.quantity } } });
-    });
-  }
+  for (const o of stale) await cancelUnpaidOrder(o.id);
   return stale.length;
 }

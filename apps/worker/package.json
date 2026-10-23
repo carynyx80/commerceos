@@ -14,7 +14,8 @@
     "@commerce-os/database": "*",
     "@commerce-os/shared": "*",
     "viem": "^2",
-    "@commerce-os/commerce": "*"
+    "@commerce-os/commerce": "*",
+    "openai": "^5"
   },
   "devDependencies": {
     "@types/node": "^22",

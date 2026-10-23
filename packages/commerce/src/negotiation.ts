@@ -170,7 +170,8 @@ export async function sellerAgentRespond(negotiationId: string, offerId: string,
   if (!agent || agent.status !== "ACTIVE") return { action: "NONE" as const };
 
   const floor = n.product.floorPriceCents ?? n.product.priceCents;
-  const decision = sellerDecision({ listPriceCents: n.product.priceCents, floorPriceCents: floor, offerCents: offer.priceCents, round: n.rounds, maxRounds: MAX_ROUNDS });
+  const lastSeller = [...n.offers].reverse().find((o) => o.from === "SELLER");
+  const decision = sellerDecision({ listPriceCents: n.product.priceCents, floorPriceCents: floor, offerCents: offer.priceCents, round: n.rounds, maxRounds: MAX_ROUNDS, lastSellerCents: lastSeller?.priceCents ?? null });
   const sellerUser = n.store.merchant.userId;
   const fallback =
     decision.action === "ACCEPT"

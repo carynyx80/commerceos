@@ -119,7 +119,10 @@ export async function syncOrder(orderId: string, log: (m: string) => void) {
   const prev = order.state;
   await prisma.$transaction(async (tx) => {
     const lastTx = events.sort((x, y) => Number(y.blockNumber - x.blockNumber) || y.logIndex - x.logIndex)[0]?.txHash;
-    await tx.order.update({ where: { id: orderId }, data: { state: next, feeBps: funded ? Number((funded.args as any).feeBps) : undefined } });
+    // Compare-and-set on the previous state: if another worker (or the payment.verify job) already
+    // applied this transition, do nothing, so inventory and notifications are never applied twice.
+    const cas = await tx.order.updateMany({ where: { id: orderId, state: prev }, data: { state: next, feeBps: funded ? Number((funded.args as any).feeBps) : undefined } });
+    if (cas.count !== 1) return;
     await tx.orderTransition.create({ data: { orderId, from: prev, to: next, source: "indexer", txHash: lastTx } });
     if (funded && (prev === "AWAITING_PAYMENT" || prev === "CANCELLED")) {
       await tx.payment.updateMany({ where: { orderId, txHash: funded.txHash.toLowerCase() }, data: { status: "CONFIRMED" } });

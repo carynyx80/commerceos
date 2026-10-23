@@ -16,7 +16,7 @@ Date: 2026-10-22 · Repository: local `commerce-os` (no remote configured) · Ne
 |---|---|
 | Foundry unit + fuzz (`CommerceEscrow`, `AgentPolicy`) | 40 passed (fuzz 512 runs each) |
 | Foundry invariants (solvency, liabilities = open orders, conservation) | 3 passed (128 runs × 64 calls) |
-| `packages/shared` unit tests | 7 passed |
+| `packages/shared` unit tests | 9 passed |
 | API end-to-end against the live local stack | **19 passed** |
 | `next build` production build | passed (19 routes) |
 | TypeScript (`tsc --noEmit`) for web, api, worker, agent-core | clean |
@@ -29,11 +29,11 @@ Journey 24 (desktop and mobile) was checked manually in the browser: no horizont
 
 - Robinhood Chain **mainnet** read-only checks: chain id 4663, USDG name/symbol/decimals (6), supply, proxy implementation (see `docs/chain-verification.md`).
 - Everything else ran against a **local** Anvil devnet and an embedded PostgreSQL 17. In the browser preview: SIWE sign-in, USDG approve + escrow payment confirmed by the indexer, and a live offer → seller-agent counter.
+- **Live OpenAI (gpt-4.1-mini)**, 2026-10-22: the buyer agent searched real listings and reported price, stock and seller verification that matched the database; it flagged a demo listing and an unverified seller; it negotiated a field watch at $430 → $450 against the seller agent ($460 → held at $460) and did not accept above the user's $450 ceiling. Live testing found and fixed: tool schemas OpenAI rejected, a cents/dollars mix-up (the agent once offered $4.50), ids lost between turns (the agent guessed an id), a seller agent that raised its own counter, a worker loop that blocked the seller's reply during an agent turn, and a double-applied state transition under concurrent indexing. Known remaining quirk: the agent sometimes words a re-counter as "declined", and does not always mention demo listings.
 - **Not** deployed to Robinhood testnet or mainnet. **Not** deployed to Vercel. No GitHub remote was provided, so nothing was pushed.
 
 ## 4. Requires external credentials or accounts
 
-- `OPENAI_API_KEY` — the buyer agent's LLM loop has not been run against the real API in this session. Its tools are tested directly; the orchestrator is typechecked but its behaviour with a live model is unverified.
 - `NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID` — WalletConnect is wired but untested without a project id.
 - Robinhood testnet deployer key + testnet ETH, a dedicated RPC, a hosted Postgres, API/worker hosting, Vercel project, GitHub remote.
 - A verified ETH/USD price feed address on Robinhood Chain (mainnet deploy refuses without it).

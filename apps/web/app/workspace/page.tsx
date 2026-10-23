@@ -62,7 +62,10 @@ function Workspace() {
   const latestIntel = useMemo(() => [...msgs].reverse().find((m) => m.role === "assistant" && m.data)?.data ?? null, [msgs]);
 
   const bottom = useRef<HTMLDivElement>(null);
-  useEffect(() => bottom.current?.scrollIntoView({ behavior: "smooth", block: "end" }), [msgs.length, working]);
+  useEffect(() => {
+    // Chromium now returns a Promise from scrollIntoView; never hand it back to React as a cleanup.
+    void bottom.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+  }, [msgs.length, working]);
 
   async function send(text: string) {
     const content = text.trim();

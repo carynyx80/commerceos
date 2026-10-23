@@ -49,7 +49,9 @@ export function CartProvider({ children }: { children: ReactNode }) {
   const qc = useQueryClient();
   const [open, setOpen] = useState(false);
   const [local, setLocal] = useState<CartLine[]>([]);
-  useEffect(() => setLocal(readLocal()), []);
+  useEffect(() => {
+    setLocal(readLocal());
+  }, []);
 
   const server = useQuery({
     queryKey: ["cart", me?.id],

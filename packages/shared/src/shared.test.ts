@@ -34,6 +34,15 @@ describe("seller decision", () => {
     expect(d.action).toBe("COUNTER");
     if (d.action === "COUNTER") expect(d.priceCents).toBeGreaterThanOrEqual(8_500);
   });
+  it("never raises its own previous counter", () => {
+    // list 480, floor 440: after countering 460, a buyer move to 450 must not get 465 back
+    const d = sellerDecision({ listPriceCents: 48_000, floorPriceCents: 44_000, offerCents: 45_000, round: 3, maxRounds: 6, lastSellerCents: 46_000 });
+    expect(d).toEqual({ action: "COUNTER", priceCents: 46_000 });
+  });
+  it("accepts when the capped counter would not beat the offer", () => {
+    const d = sellerDecision({ listPriceCents: 48_000, floorPriceCents: 44_000, offerCents: 45_000, round: 3, maxRounds: 6, lastSellerCents: 45_000 });
+    expect(d.action).toBe("ACCEPT");
+  });
   it("rejects lowball on last round", () =>
     expect(sellerDecision({ ...base, offerCents: 5_000, round: 4 }).action).toBe("REJECT"));
 });

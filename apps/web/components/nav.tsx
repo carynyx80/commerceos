@@ -23,7 +23,9 @@ export function Nav() {
   const [menu, setMenu] = useState(false);
   const [search, setSearch] = useState(false);
   const [q, setQ] = useState("");
-  useEffect(() => setMenu(false), [path]);
+  useEffect(() => {
+    setMenu(false);
+  }, [path]);
 
   return (
     <header className="sticky top-0 z-40 border-b hairline bg-obsidian/75 backdrop-blur-xl">

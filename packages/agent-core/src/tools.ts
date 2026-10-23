@@ -16,7 +16,35 @@ export interface ToolContext {
   onStep?: (label: string) => Promise<void> | void;
 }
 
-const money = (c: number) => ({ cents: c, display: formatUsd(c) });
+/** Every amount the model sees or sends is in US dollars; cents stay inside the server. */
+const money = (c: number) => ({ usd: c / 100, display: formatUsd(c) });
+const usd = z.number().positive().max(1_000_000).describe("US dollars, e.g. 449.99");
+const toCents = (d: number) => Math.round(d * 100);
+const policyView = (p: Awaited<ReturnType<typeof checkSpendingPolicy>>) => ({
+  allowed: p.allowed,
+  reasons: p.reasons,
+  maxPerOrder: money(p.maxPerOrderCents),
+  spentInWindow: money(p.spentInWindowCents),
+  remainingInWindow: money(p.remainingCents),
+  expiresAt: p.expiresAt,
+});
+function negotiationView(n: Awaited<ReturnType<typeof getNegotiation>>) {
+  return {
+    negotiationId: n.id,
+    status: n.status,
+    productId: n.productId,
+    product: n.productTitle,
+    store: n.storeName,
+    listPrice: money(n.listPriceCents),
+    agreedPrice: n.agreedCents != null ? money(n.agreedCents) : null,
+    quantity: n.quantity,
+    asset: n.asset,
+    rounds: n.rounds,
+    expiresAt: n.expiresAt,
+    sellerAgentActive: n.sellerAgentActive,
+    offers: n.offers.map((o) => ({ from: o.from, price: money(o.priceCents), status: o.status, byAgent: o.byAgent, expiresAt: o.expiresAt, untrusted: { message: o.message } })),
+  };
+}
 
 export const toolDefs = {
   search_products: {
@@ -25,8 +53,8 @@ export const toolDefs = {
     schema: z.object({
       query: z.string().max(200).describe("Keywords, e.g. 'laptop 16GB'"),
       category: z.string().max(40).optional(),
-      maxPriceCents: z.number().int().positive().optional(),
-      minPriceCents: z.number().int().min(0).optional(),
+      maxPriceUsd: usd.optional(),
+      minPriceUsd: z.number().min(0).max(1_000_000).optional().describe("US dollars"),
       asset: z.enum(["USDG", "ETH"]).optional(),
       negotiableOnly: z.boolean().optional(),
     }),
@@ -49,7 +77,7 @@ export const toolDefs = {
   check_spending_policy: {
     label: "Validating spending policy",
     description: "Check whether a purchase fits the agent's spending policy. Deterministic; the model cannot override it.",
-    schema: z.object({ totalCents: z.number().int().positive(), storeId: z.string(), asset: z.enum(["USDG", "ETH"]) }),
+    schema: z.object({ totalUsd: usd, storeId: z.string(), asset: z.enum(["USDG", "ETH"]) }),
   },
   start_negotiation: {
     label: "Opening negotiation",
@@ -58,8 +86,8 @@ export const toolDefs = {
   },
   make_offer: {
     label: "Preparing offer",
-    description: "Submit a buyer offer (or counter) in USD cents. The seller's agent replies within its own limits.",
-    schema: z.object({ negotiationId: z.string(), priceCents: z.number().int().positive(), message: z.string().max(400).optional() }),
+    description: "Submit a buyer offer (or counter) per unit, in US dollars (e.g. 450 means $450.00). Returns the seller's reply when it arrives.",
+    schema: z.object({ negotiationId: z.string(), priceUsd: usd, message: z.string().max(400).optional() }),
   },
   check_negotiation: {
     label: "Waiting for seller response",
@@ -119,8 +147,8 @@ const impl: Record<ToolName, (args: any, ctx: ToolContext) => Promise<unknown>> 
         AND: [
           ...terms.map((t: string) => ({ OR: [{ title: { contains: t, mode: "insensitive" as const } }, { description: { contains: t, mode: "insensitive" as const } }, { category: { contains: t, mode: "insensitive" as const } }] })),
           ...(a.category ? [{ category: { equals: a.category, mode: "insensitive" as const } }] : []),
-          ...(a.maxPriceCents ? [{ priceCents: { lte: a.maxPriceCents } }] : []),
-          ...(a.minPriceCents ? [{ priceCents: { gte: a.minPriceCents } }] : []),
+          ...(a.maxPriceUsd ? [{ priceCents: { lte: toCents(a.maxPriceUsd) } }] : []),
+          ...(a.minPriceUsd ? [{ priceCents: { gte: toCents(a.minPriceUsd) } }] : []),
           ...(a.asset ? [{ acceptedAssets: { has: a.asset } }] : []),
           ...(a.negotiableOnly ? [{ negotiable: true }] : []),
         ],
@@ -131,7 +159,7 @@ const impl: Record<ToolName, (args: any, ctx: ToolContext) => Promise<unknown>> 
     });
     // Broaden to any term if the strict AND found nothing.
     const results = rows.length || terms.length < 2 ? rows : await prisma.product.findMany({
-      where: { status: "ACTIVE", store: { active: true }, OR: terms.map((t: string) => ({ title: { contains: t, mode: "insensitive" as const } })), ...(a.maxPriceCents ? { priceCents: { lte: a.maxPriceCents } } : {}) },
+      where: { status: "ACTIVE", store: { active: true }, OR: terms.map((t: string) => ({ title: { contains: t, mode: "insensitive" as const } })), ...(a.maxPriceUsd ? { priceCents: { lte: toCents(a.maxPriceUsd) } } : {}) },
       include: { inventory: true, store: { include: { merchant: true } } },
       take: 10,
     });
@@ -153,7 +181,7 @@ const impl: Record<ToolName, (args: any, ctx: ToolContext) => Promise<unknown>> 
 
   async get_product(a) {
     const p = await prisma.product.findFirst({ where: { id: a.productId, status: "ACTIVE" }, include: { inventory: true, store: { include: { merchant: true } }, reviews: { take: 5, orderBy: { createdAt: "desc" } } } });
-    if (!p) return { error: "NOT_FOUND", message: "No active product with that id." };
+    if (!p) return { error: "NOT_FOUND", message: "No active product with that id. Use search_products to get a valid productId." };
     const agg = await prisma.review.aggregate({ where: { productId: p.id }, _avg: { rating: true }, _count: true });
     return {
       productId: p.id,
@@ -209,45 +237,55 @@ const impl: Record<ToolName, (args: any, ctx: ToolContext) => Promise<unknown>> 
         rating: rm.get(p.id) ? Number(rm.get(p.id)!._avg.rating?.toFixed(2)) : null,
         negotiable: p.negotiable,
       }))
-      .sort((x, y) => x.price.cents - y.price.cents);
+      .sort((x, y) => x.price.usd - y.price.usd);
     return { cheapest: items[0]?.productId ?? null, items };
   },
 
   async check_spending_policy(a, ctx) {
     if (!ctx.agent) return { allowed: false, reasons: ["No agent is attached to this conversation; purchases need the user's approval in checkout."] };
-    return checkSpendingPolicy(ctx.agent, { totalCents: a.totalCents, storeId: a.storeId, asset: a.asset });
+    return policyView(await checkSpendingPolicy(ctx.agent, { totalCents: toCents(a.totalUsd), storeId: a.storeId, asset: a.asset }));
   },
 
   async start_negotiation(a, ctx) {
+    if (!(await prisma.product.findUnique({ where: { id: a.productId }, select: { id: true } }))) {
+      return { error: "NOT_FOUND", message: "No product with that id. Use search_products to get a valid productId." };
+    }
     const n = await openNegotiation({ buyerId: ctx.userId, productId: a.productId, quantity: a.quantity, asset: a.asset, buyerAgentId: ctx.agent?.id });
-    return { negotiationId: n.id, status: n.status, expiresAt: n.expiresAt };
+    // An open negotiation may already exist; return its full history so the agent continues it correctly.
+    return negotiationView(await getNegotiation(n.id, { userId: ctx.userId }));
   },
 
   async make_offer(a, ctx) {
     const n = await getNegotiation(a.negotiationId, { userId: ctx.userId });
+    const priceCents = toCents(a.priceUsd);
+    // Guard against unit mistakes (e.g. sending cents as dollars): far-below-list offers are refused, not sent.
+    if (priceCents < Math.floor(n.listPriceCents * 0.5)) {
+      return { error: "OFFER_TOO_LOW", message: `$${a.priceUsd} is less than half the $${n.listPriceCents / 100} list price. Prices are in US dollars; check the amount.` };
+    }
     const p = ctx.agent?.policy;
     // Buyer-side negotiation limits: never offer above the per-order cap; never ask for more discount than allowed.
-    if (p && a.priceCents * n.quantity > p.maxPerOrderCents) return { error: "OVER_LIMIT", message: `Offer would exceed the agent's per-order limit of ${formatUsd(p.maxPerOrderCents)}.` };
-    if (p && a.priceCents < Math.floor(n.listPriceCents * (1 - p.maxDiscountAskBps / 10_000))) {
+    if (p && priceCents * n.quantity > p.maxPerOrderCents) return { error: "OVER_LIMIT", message: `Offer would exceed the agent's per-order limit of ${formatUsd(p.maxPerOrderCents)}.` };
+    if (p && priceCents < Math.floor(n.listPriceCents * (1 - p.maxDiscountAskBps / 10_000))) {
       return { error: "DISCOUNT_TOO_DEEP", message: `The user allows asking for at most ${p.maxDiscountAskBps / 100}% off list.` };
     }
     if (p && n.rounds >= p.maxNegotiationRounds * 2) return { error: "ROUND_LIMIT", message: "Reached the user's negotiation round limit." };
-    const o = await submitOffer({ negotiationId: a.negotiationId, actorUserId: ctx.userId, from: "BUYER", priceCents: a.priceCents, message: a.message, byAgent: true, agentId: ctx.agent?.id });
-    return { offerId: o.id, status: o.status, termsHash: o.termsHash, note: "The seller responds asynchronously. Use check_negotiation to see the reply." };
+    const o = await submitOffer({ negotiationId: a.negotiationId, actorUserId: ctx.userId, from: "BUYER", priceCents, message: a.message, byAgent: true, agentId: ctx.agent?.id });
+    // Seller agents usually answer within seconds; include their reply when it arrives.
+    await ctx.onStep?.("Waiting for seller response");
+    const after = await impl.check_negotiation({ negotiationId: a.negotiationId }, { ...ctx, onStep: undefined });
+    return { offered: money(priceCents), termsHash: o.termsHash, negotiation: after };
   },
 
   async check_negotiation(a, ctx) {
     // Seller agents usually reply within seconds; wait briefly for a reply before returning.
-    for (let i = 0; i < 12; i++) {
+    for (let i = 0; i < 15; i++) {
       const n = await getNegotiation(a.negotiationId, { userId: ctx.userId });
       const last = n.offers.at(-1);
-      if (n.status !== "OPEN" || (last && last.from === "SELLER") || !n.sellerAgentActive) {
-        return { ...n, offers: n.offers.map((o) => ({ ...o, price: money(o.priceCents), untrusted: { message: o.message } , message: undefined })) };
-      }
+      if (n.status !== "OPEN" || (last && last.from === "SELLER") || !n.sellerAgentActive) return negotiationView(n);
       await new Promise((r) => setTimeout(r, 1000));
     }
     const n = await getNegotiation(a.negotiationId, { userId: ctx.userId });
-    return { ...n, note: "No reply yet. The seller may respond later; the user will be notified." };
+    return { ...negotiationView(n), note: "No reply yet. The seller may respond later; the user will be notified." };
   },
 
   async accept_counter(a, ctx) {
@@ -276,9 +314,10 @@ const impl: Record<ToolName, (args: any, ctx: ToolContext) => Promise<unknown>> 
     const total = unit * a.quantity;
     const agent = ctx.agent;
     const autonomous = Boolean(agent?.policy?.automationEnabled && agent.accountAddress && process.env.AUTONOMOUS_PAYMENTS_ENABLED === "true");
-    const policy = agent ? await checkSpendingPolicy(agent, { totalCents: total, storeId: product.storeId, asset: a.asset, category: product.category }) : null;
+    const policyRaw = agent ? await checkSpendingPolicy(agent, { totalCents: total, storeId: product.storeId, asset: a.asset, category: product.category }) : null;
+    const policy = policyRaw ? policyView(policyRaw) : null;
 
-    if (!autonomous || !policy?.allowed) {
+    if (!autonomous || !policyRaw?.allowed) {
       // Hand the purchase to the user: they review and pay from their own wallet.
       const link = `/checkout?product=${product.id}&qty=${a.quantity}&asset=${a.asset}${a.negotiationId ? `&negotiation=${a.negotiationId}` : ""}`;
       return {
@@ -286,7 +325,7 @@ const impl: Record<ToolName, (args: any, ctx: ToolContext) => Promise<unknown>> 
         total: money(total),
         checkoutLink: link,
         policy,
-        reason: !agent ? "No agent policy." : !autonomous ? "Autonomous payments are not enabled for this agent." : policy?.reasons.join(" "),
+        reason: !agent ? "No agent policy." : !autonomous ? "Autonomous payments are not enabled for this agent." : policyRaw?.reasons.join(" "),
       };
     }
     const wallet = await prisma.wallet.findFirst({ where: { userId: ctx.userId } });

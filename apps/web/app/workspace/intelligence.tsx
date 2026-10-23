@@ -9,12 +9,12 @@ export interface Intel {
   comparison: { cheapest: string | null; items: any[] } | null;
   sellers: any[];
   negotiation: any | null;
-  policy: { allowed: boolean; reasons: string[]; spentInWindowCents: number; remainingCents: number; maxPerOrderCents: number; expiresAt: string | null } | null;
+  policy: { allowed: boolean; reasons: string[]; spentInWindow: Money; remainingInWindow: Money; maxPerOrder: Money; expiresAt: string | null } | null;
   checkout: any | null;
   orders: any[] | null;
 }
 
-const usd = (c: number) => (c / 100).toLocaleString("en-US", { style: "currency", currency: "USD" });
+type Money = { usd: number; display: string };
 
 export function IntelligencePanel({ intel, working, autonomous }: { intel: Intel | null; working: boolean; autonomous: boolean }) {
   const empty = !intel || (!intel.products.length && !intel.comparison && !intel.sellers.length && !intel.negotiation && !intel.policy && !intel.checkout && !intel.orders);
@@ -75,10 +75,10 @@ export function IntelligencePanel({ intel, working, autonomous }: { intel: Intel
             <Card key="neg" title={`Negotiation · ${String(intel!.negotiation.status ?? "").toLowerCase()}`}>
               <ol className="space-y-1.5 text-[12.5px]">
                 {(intel!.negotiation.offers ?? []).map((o: any) => (
-                  <li key={o.id} className="flex justify-between"><span className={o.from === "SELLER" ? "text-sage" : ""}>{o.from === "SELLER" ? "Seller" : "You"} · {o.status?.toLowerCase()}</span><span className="num">{usd(o.priceCents)}</span></li>
+                  <li key={`${o.from}-${o.expiresAt}`} className="flex justify-between"><span className={o.from === "SELLER" ? "text-sage" : ""}>{o.from === "SELLER" ? "Seller" : "You"} · {o.status?.toLowerCase()}</span><span className="num">{o.price?.display}</span></li>
                 ))}
               </ol>
-              {intel!.negotiation.agreedCents && <p className="mt-2 text-[12.5px] text-ok">Agreed at {usd(intel!.negotiation.agreedCents)}</p>}
+              {intel!.negotiation.agreedPrice && <p className="mt-2 text-[12.5px] text-ok">Agreed at {intel!.negotiation.agreedPrice.display}</p>}
             </Card>
           )}
           {intel!.policy && (
@@ -86,8 +86,8 @@ export function IntelligencePanel({ intel, working, autonomous }: { intel: Intel
               <p className={`flex items-center gap-1.5 text-[13px] ${intel!.policy.allowed ? "text-ok" : "text-warn"}`}>{intel!.policy.allowed ? <Check size={13} /> : <Lock size={13} />}{intel!.policy.allowed ? "Within your limits" : "Needs your approval"}</p>
               {intel!.policy.reasons?.map((r) => <p key={r} className="mt-1 text-[12px] text-mist">· {r}</p>)}
               <div className="mt-2 grid grid-cols-2 gap-2 text-[11.5px]">
-                <div><p className="text-dim">Per order</p><p className="num">{usd(intel!.policy.maxPerOrderCents)}</p></div>
-                <div><p className="text-dim">Remaining in window</p><p className="num">{usd(intel!.policy.remainingCents)}</p></div>
+                <div><p className="text-dim">Per order</p><p className="num">{intel!.policy.maxPerOrder?.display}</p></div>
+                <div><p className="text-dim">Remaining in window</p><p className="num">{intel!.policy.remainingInWindow?.display}</p></div>
               </div>
             </Card>
           )}

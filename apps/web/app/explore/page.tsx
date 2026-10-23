@@ -28,7 +28,9 @@ function Explore() {
   const router = useRouter();
   const [q, setQ] = useState(sp.get("q") ?? "");
   const [filtersOpen, setFiltersOpen] = useState(false);
-  useEffect(() => setQ(sp.get("q") ?? ""), [sp]);
+  useEffect(() => {
+    setQ(sp.get("q") ?? "");
+  }, [sp]);
 
   const params = new URLSearchParams(sp.toString());
   params.delete("cursor");
@@ -198,7 +200,9 @@ function Toggle({ label, on, onClick }: { label: string; on: boolean; onClick: (
 }
 function PriceInput({ value, placeholder, onCommit }: { value: string | null; placeholder: string; onCommit: (v: string | null) => void }) {
   const [v, setV] = useState(value ? String(Number(value) / 100) : "");
-  useEffect(() => setV(value ? String(Number(value) / 100) : ""), [value]);
+  useEffect(() => {
+    setV(value ? String(Number(value) / 100) : "");
+  }, [value]);
   return (
     <input
       inputMode="numeric"

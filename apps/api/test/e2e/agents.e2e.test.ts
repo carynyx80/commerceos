@@ -2,7 +2,7 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { erc20Abi, type Hex } from "viem";
 import { agentAccountAbi, agentAccountFactoryAbi, agentPolicyModuleAbi, testUSDGAbi } from "@commerce-os/blockchain";
 import { runTool, executeAgentPayment, PaymentRefused } from "@commerce-os/agent-core";
-import { createCheckoutQuote } from "@commerce-os/commerce";
+import { cancelUnpaidOrder, createCheckoutQuote } from "@commerce-os/commerce";
 import { prisma } from "@commerce-os/database";
 import { KEYS, Session, d, pub, waitFor, walletFor } from "./helpers";
 
@@ -37,7 +37,7 @@ describe("agent journeys", () => {
     // clear earlier runs' open negotiations so the seller agent starts fresh
     const me = (await owner.req("/auth/me")).body;
     await prisma.negotiation.updateMany({ where: { buyerId: me.id, status: { in: ["OPEN", "ACCEPTED"] } }, data: { status: "CANCELLED" } });
-    await prisma.order.updateMany({ where: { buyerId: me.id, state: "AWAITING_PAYMENT" }, data: { state: "CANCELLED" } });
+    for (const o of await prisma.order.findMany({ where: { buyerId: me.id, state: "AWAITING_PAYMENT" } })) await cancelUnpaidOrder(o.id, "api");
   });
 
   it("14: owner creates a buyer agent with a spending policy", async () => {
@@ -54,7 +54,7 @@ describe("agent journeys", () => {
   });
 
   it("15: agent searches real listings", async () => {
-    const out: any = await runTool("search_products", { query: "daypack", maxPriceCents: 20_000 }, await ctx());
+    const out: any = await runTool("search_products", { query: "daypack", maxPriceUsd: 200 }, await ctx());
     expect(out.products.map((p: any) => p.productId)).toContain(daypackId);
     expect(out.products[0]).not.toHaveProperty("floorPriceCents");
   });
@@ -62,30 +62,32 @@ describe("agent journeys", () => {
   it("16: agent negotiates with the seller agent", async () => {
     const c = await ctx();
     const n: any = await runTool("start_negotiation", { productId: daypackId, quantity: 1, asset: "USDG" }, c);
-    const tooLow: any = await runTool("make_offer", { negotiationId: n.negotiationId, priceCents: 5_000 }, c);
+    const tooLow: any = await runTool("make_offer", { negotiationId: n.negotiationId, priceUsd: 90 }, c);
     expect(tooLow.error).toBe("DISCOUNT_TOO_DEEP"); // buyer-side limit: at most 20% off
-    await runTool("make_offer", { negotiationId: n.negotiationId, priceCents: 10_000, message: "Would you take $100?" }, c);
+    const unitSlip: any = await runTool("make_offer", { negotiationId: n.negotiationId, priceUsd: 1.1 }, c);
+    expect(unitSlip.error).toBe("OFFER_TOO_LOW"); // a cents-for-dollars mistake is refused, never sent
+    await runTool("make_offer", { negotiationId: n.negotiationId, priceUsd: 100, message: "Would you take $100?" }, c);
     let view: any = await runTool("check_negotiation", { negotiationId: n.negotiationId }, c);
     let counter = view.offers.at(-1);
     expect(counter.from).toBe("SELLER");
     expect(counter.byAgent).toBe(true);
-    expect(counter.priceCents).toBeGreaterThanOrEqual(10_500); // never below the merchant floor
+    expect(counter.price.usd * 100).toBeGreaterThanOrEqual(10_500); // never below the merchant floor
     // $113 is over the agent's $110 per-order cap: the agent may not accept it.
     const refused: any = await runTool("accept_counter", { negotiationId: n.negotiationId }, c);
     expect(refused.error).toBe("OVER_LIMIT");
     // Keep offering at the cap until the seller agent accepts (it concedes in late rounds, never below floor).
     for (let i = 0; i < 4 && view.status === "OPEN"; i++) {
-      await runTool("make_offer", { negotiationId: n.negotiationId, priceCents: 11_000 }, c);
+      await runTool("make_offer", { negotiationId: n.negotiationId, priceUsd: 110 }, c);
       view = await runTool("check_negotiation", { negotiationId: n.negotiationId }, c);
       counter = view.offers.at(-1);
-      if (view.status === "OPEN" && counter.from === "SELLER" && counter.priceCents <= 11_000) {
+      if (view.status === "OPEN" && counter.from === "SELLER" && counter.price.usd * 100 <= 11_000) {
         await runTool("accept_counter", { negotiationId: n.negotiationId }, c);
         view = await runTool("check_negotiation", { negotiationId: n.negotiationId }, c);
       }
     }
     expect(view.status).toBe("ACCEPTED");
-    expect(view.agreedCents).toBeLessThanOrEqual(11_000);
-    expect(view.agreedCents).toBeGreaterThanOrEqual(10_500);
+    expect(view.agreedPrice?.usd * 100).toBeLessThanOrEqual(11_000);
+    expect(view.agreedPrice?.usd * 100).toBeGreaterThanOrEqual(10_500);
     (globalThis as any).negotiationId = n.negotiationId;
   });
 
@@ -130,7 +132,7 @@ describe("agent journeys", () => {
     const exec: any = await runTool("execute_purchase", { orderId: prep.orderId }, c);
     expect(exec, JSON.stringify(exec)).toMatchObject({ state: "FUNDED" });
     const after = await pub.readContract({ address: d.usdg, abi: erc20Abi, functionName: "balanceOf", args: [account] });
-    expect(before - after).toBe(BigInt(prep.total.cents) * 10_000n);
+    expect(before - after).toBe(BigInt(Math.round(prep.total.usd * 100)) * 10_000n);
     const o = await prisma.order.findUniqueOrThrow({ where: { id: prep.orderId } });
     expect(o.buyerAddress).toBe(account.toLowerCase());
     expect(o.agentId).toBe(agentId);
@@ -150,7 +152,7 @@ describe("agent journeys", () => {
     await expect(executeAgentPayment(q.orderId, agentId)).rejects.toThrow(/OverPerOrderLimit/);
     await prisma.agentPolicy.update({ where: { agentId }, data: { maxPerOrderCents: 11_000, rollingLimitCents: 30_000 } });
     expect((await prisma.order.findUniqueOrThrow({ where: { id: q.orderId } })).state).toBe("AWAITING_PAYMENT");
-    await prisma.order.update({ where: { id: q.orderId }, data: { state: "CANCELLED" } }); // release it from the window
+    await cancelUnpaidOrder(q.orderId, "api"); // release it from the window and return its stock
   });
 
   it("20: revoked authorization prevents further purchases", async () => {
@@ -167,5 +169,6 @@ describe("agent journeys", () => {
     await expect(executeAgentPayment(q.orderId, agentId)).rejects.toThrow(PaymentRefused);
     const t: any = await runTool("prepare_checkout", { productId: tote.id, quantity: 1, asset: "USDG" }, await ctx());
     expect(t.mode).toBe("USER_APPROVAL_REQUIRED");
+    await cancelUnpaidOrder(q.orderId, "api");
   });
 });
