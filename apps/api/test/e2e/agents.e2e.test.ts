@@ -13,6 +13,7 @@ import { KEYS, Session, d, pub, waitFor, walletFor } from "./helpers";
  */
 const owner = new Session(KEYS.buyer2);
 let agentId = "";
+const SALT = BigInt(Date.now()); // fresh account per run: on-chain spend windows persist
 let account: Hex;
 let daypackId = "";
 let fieldworkStoreId = "";
@@ -97,8 +98,8 @@ describe("agent journeys", () => {
   it("owner deploys, authorizes, funds and links the agent's smart account", async () => {
     const w = walletFor(KEYS.buyer2);
     const cfg = (await owner.req("/agents/config")).body;
-    account = (await pub.readContract({ address: d.accountFactory, abi: agentAccountFactoryAbi, functionName: "accountAddress", args: [w.account.address, 7n] })) as Hex;
-    await send(() => w.writeContract({ address: d.accountFactory, abi: agentAccountFactoryAbi, functionName: "createAccount", args: [7n] }));
+    account = (await pub.readContract({ address: d.accountFactory, abi: agentAccountFactoryAbi, functionName: "accountAddress", args: [w.account.address, SALT] })) as Hex;
+    await send(() => w.writeContract({ address: d.accountFactory, abi: agentAccountFactoryAbi, functionName: "createAccount", args: [SALT] }));
     await send(() => w.writeContract({ address: account, abi: agentAccountAbi, functionName: "setAgentKey", args: [cfg.executor] }));
     const now = Number((await pub.getBlock()).timestamp);
     await send(() =>
@@ -127,7 +128,7 @@ describe("agent journeys", () => {
     expect(prep.mode).toBe("AGENT_PAYABLE");
     const before = await pub.readContract({ address: d.usdg, abi: erc20Abi, functionName: "balanceOf", args: [account] });
     const exec: any = await runTool("execute_purchase", { orderId: prep.orderId }, c);
-    expect(exec.state).toBe("FUNDED");
+    expect(exec, JSON.stringify(exec)).toMatchObject({ state: "FUNDED" });
     const after = await pub.readContract({ address: d.usdg, abi: erc20Abi, functionName: "balanceOf", args: [account] });
     expect(before - after).toBe(BigInt(prep.total.cents) * 10_000n);
     const o = await prisma.order.findUniqueOrThrow({ where: { id: prep.orderId } });
